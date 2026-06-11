@@ -39,6 +39,8 @@ The template VM and provider account are operator infrastructure — keep or ret
 
 ## 5. Restart and validate
 
+> **Skip this step during full-recipe removal.** When tearing down the whole PR Factory, sibling components are still mid-teardown — a build here is expected to be red. Only the recipe-level validation at the end binds. Run the block below only when removing `vm-test-orchestrator` in isolation.
+
 ```bash
 launchctl kickstart -k gui/$(id -u)/com.nanoclaw   # macOS
 # systemctl --user restart nanoclaw                # Linux

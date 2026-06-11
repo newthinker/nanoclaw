@@ -113,7 +113,7 @@ cp $SKILL/files/src/db/migrations/module-pr-factory-pr-threads-v2.ts src/db/migr
 
 ### 3. Register the migration (`src/db/migrations/index.ts`)
 
-**3a.** Append to the import block:
+**3a.** Append to the import block (skip if already present):
 
 ```typescript
 import { modulePrFactoryPrThreadsV2 } from './module-pr-factory-pr-threads-v2.js';
@@ -154,6 +154,8 @@ export function deletePendingApprovalsBySessionAction(sessionId: string, action:
 
 ### 5. Append the modules-barrel line (`src/modules/index.ts`)
 
+(Skip if already present.)
+
 ```typescript
 import './pr-factory/index.js';
 ```
@@ -164,7 +166,7 @@ import './pr-factory/index.js';
 cp $SKILL/files/container/agent-runner/src/mcp-tools/pr-factory.ts container/agent-runner/src/mcp-tools/pr-factory.ts
 ```
 
-In `container/agent-runner/src/mcp-tools/index.ts`, insert a side-effect import **before** the `startMcpServer` import line:
+In `container/agent-runner/src/mcp-tools/index.ts`, insert a side-effect import **before** the `startMcpServer` import line (skip if already present):
 
 ```typescript
 import './pr-factory.js';
@@ -208,6 +210,10 @@ cp $SKILL/files/container/agent-runner/src/mcp-tools/pr-factory-tools.test.ts co
 
 ## Configuration
 
+### One factory instance serves one repository
+
+A PR Factory instance serves a **single repository** — the one named in `PR_FACTORY_DEFAULT_REPO`. Point its GitHub webhook at that one repo, and all run state (sessions, VMs, the 30-minute timeouts) is keyed per-PR *within* that repo: PR numbers are unique inside a repo but collide across repos, so a single instance cannot safely serve more than one. To cover multiple repositories, run multiple factory instances (separate channels, bots, and `PR_FACTORY_DEFAULT_REPO` values).
+
 ### Environment (`.env`)
 
 ```bash
@@ -227,6 +233,18 @@ If `NANOCLAW_EGRESS_LOCKDOWN` is enabled (default off), worker containers cannot
 
 In the repository (or org) settings, add a webhook: Payload URL `https://your-domain/webhook/github`, content type `application/json`, secret = `GITHUB_WEBHOOK_SECRET`, events: **Pull requests** only.
 
+### GitHub credential — read-only PAT (required)
+
+The GitHub credential the factory injects into the **worker** and **tester** containers (and the one the host's diff/stats fetches ride through the OneCLI gateway) **must be a fine-grained, read-only Personal Access Token**. Mint it scoped to the single repository this factory serves (`PR_FACTORY_DEFAULT_REPO`) with exactly these permissions — nothing else:
+
+- **Contents: Read-only**
+- **Pull requests: Read-only**
+- **Metadata: Read-only** (mandatory baseline for any fine-grained token)
+
+Do **not** grant Contents/Pull-requests write, Administration, or merge. This is the load-bearing security boundary: the worker reads the diff and runs read-only `gh` lookups with this token, but **every write — comment, label, approve, merge, close — goes exclusively through the human-approved `credentialed_gh` path** (the `gh-action-approval` component), which executes under the approving human's own gh identity, never this token. A worker (or a tester, or a prompt-injected PR diff) that tries to write directly is refused by GitHub because the injected token has no write scope. Provisioning a write-capable token here collapses that boundary — the approval card stops being the only thing standing between an autonomous agent and your `main`.
+
+Store the token in the OneCLI vault with a host pattern for `api.github.com` so the gateway injects it per request; it is never placed in `.env` or passed to the container as an env var. See `init-onecli`.
+
 ### Grant approver roles (required)
 
 Core's approval-click authorization (`isAuthorizedApprovalClick`) silently ignores card clicks from users without a `user_roles` row — the symptom is a card that does nothing, with only a host-log warning. Grant every human who will click PR Factory approval cards an owner/admin role, e.g.:
@@ -239,7 +257,16 @@ pnpm run ncl roles grant --user 'slack:U0XXXXXXX' --role admin
 
 ### Review workflow (operator override point)
 
-The worker's triage/review/test-plan workflow ships as **default group instructions**, seeded once into `groups/pr-factory-worker/CLAUDE.local.md` on first bootstrap and never overwritten — edit that file to tune trusted contributors, merge policy, and review depth for your repo. Operators who maintain their own container skill instead set `PR_FACTORY_REVIEW_SKILL=<skill-name>` (and add that skill to the worker group's container config): every PR trigger then opens with `Use the /<skill-name> skill …` and the seeded defaults are ignored.
+The worker's triage/review/test-plan workflow ships as **default group instructions**, seeded once into `groups/pr-factory-worker/CLAUDE.local.md` on first bootstrap and never overwritten — edit that file to tune trusted contributors, merge policy, and review depth for your repo. Operators who maintain their own container skill instead write it to `container/skills/<skill-name>/` and set `PR_FACTORY_REVIEW_SKILL=<skill-name>`: every PR trigger then opens with `Use the /<skill-name> skill …` and the seeded defaults are ignored. The worker group's container config keeps the default `skills: 'all'`, so a new `container/skills/` folder reaches the worker on its next container start with no config change — only edit the group's `skills` selection if it uses an explicit allowlist instead of `'all'`.
+
+### `gh` in the worker container (required by the default workflow)
+
+The default worker workflow runs read-only `gh` lookups (viewing PRs, listing checks, fetching user info) inside the worker container. **The stock agent image does not ship `gh`** — its apt block installs `git`, `curl`, `chromium`, etc., and the Node-CLI block installs `claude-code` / `agent-browser` / `vercel`, but not the GitHub CLI. So either:
+
+- add `gh` to the worker container (pin it via a new `ARG` in `container/Dockerfile`'s apt or Node-CLI block, then `./container/build.sh`), **or**
+- replace the default workflow with a review skill (`PR_FACTORY_REVIEW_SKILL`) that uses the GitHub REST API through the OneCLI proxy instead of `gh`.
+
+Whichever you choose, the read-only GitHub credential (the fine-grained read-only PAT above, injected by the OneCLI gateway) must be reachable from the container so `gh`/REST calls authenticate. Writes still go only through `credentialed_gh` — the in-container `gh` is read-only by token scope.
 
 ### Tester agent group (optional)
 

@@ -89,6 +89,8 @@ Disable or uninstall the "PR Supervisor" and "PR Tester" Slack apps in the works
 
 ## 8. Validate
 
+> **Skip this step during full-recipe removal.** Removing the whole PR Factory? This runs last in the reverse order, but the recipe-level validation is the binding one — run this block only when removing `slack-bots` in isolation.
+
 ```bash
 pnpm run build
 pnpm test

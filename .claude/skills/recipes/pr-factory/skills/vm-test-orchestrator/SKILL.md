@@ -52,7 +52,7 @@ cp $SKILL/files/src/modules/pr-factory/test-orchestrator.ts src/modules/pr-facto
 
 ### 2. Append the modules-barrel line (`src/modules/index.ts`)
 
-After the `import './pr-factory/index.js';` line, append:
+After the `import './pr-factory/index.js';` line, append (skip if already present):
 
 ```typescript
 import './pr-factory/test-orchestrator.js';
@@ -93,6 +93,15 @@ Prepared once by the operator; the module assumes:
 - buildable with `pnpm run build`,
 - running as a **systemd user service** whose unit name contains `nanoclaw` (the stability probe greps `systemctl --user list-unit-files` for it),
 - the host's control-plane SSH key authorized for both the control plane and `TEST_VM_SSH_USER` on cloned VMs.
+
+### Provisioning SSH access for the tester → VM path (required)
+
+There are **two SSH legs**, and both need keys in place before a test run can succeed:
+
+1. **Host → control plane / cloned VMs.** The NanoClaw host runs `ssh <control-plane> cp/tag/rm …` to clone and reap VMs. Point `PR_FACTORY_TEST_SSH_KEY` at the host identity authorized on the control-plane host (or rely on ssh's default identities); that same public key must be in `authorized_keys` for `TEST_VM_SSH_USER` on the cloned VMs (the template bakes it in, so every clone inherits it).
+2. **Tester container → cloned VM.** Once a VM is ready, the *tester agent runs inside its container* and SSHes to `<TEST_VM_HOST_TEMPLATE>` as `TEST_VM_SSH_USER` to execute the plan. The tester container therefore needs its own private key and the matching public key in the VM's `authorized_keys`. Mount or inject that key into the `pr-tester` group's container (e.g. a mounted `~/.ssh` dir on the host allowlist, or a key provisioned into the group's workspace) and add a `known_hosts` entry or `StrictHostKeyChecking accept-new` so the first connection isn't blocked on a prompt. Without this leg the VM clones and reports ready, but the tester cannot log in and the run times out.
+
+Keep both keys read-restricted and scoped to the test VMs — they are infrastructure credentials, not GitHub or vault secrets.
 
 ## Validate
 

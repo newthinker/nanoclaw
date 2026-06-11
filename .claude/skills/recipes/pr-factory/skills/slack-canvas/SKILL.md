@@ -132,7 +132,7 @@ If the surrounding code has drifted cosmetically, apply the same three semantic 
 
 ### 3. Append the modules-barrel line (`src/modules/index.ts`)
 
-After the `import './pr-factory/index.js';` line, append:
+After the `import './pr-factory/index.js';` line, append (skip if already present):
 
 ```typescript
 import './pr-factory/slack-canvas.js';
@@ -150,7 +150,7 @@ cp $SKILL/files/src/modules/pr-factory/file-transform.test.ts src/modules/pr-fac
 
 ## Known smell (declared)
 
-**Single-slot file transform.** `registerFileTransform` holds ONE transform; a second registrant silently clobbers the canvas conversion. The guard test's worker-session leg doubles as the composed-stack assertion: any other module registering a transform turns it red. If a second consumer ever appears, the slot must become an ordered chain in core first — that hook redesign (and the hook itself) is a natural standalone upstream micro-PR if the maintainer prefers it split out of this component.
+**Single-slot file transform.** `registerFileTransform` holds ONE transform; a second registrant silently clobbers the canvas conversion. The guard test's worker-session leg doubles as the composed-stack assertion: any other module registering a transform turns it red. If a second consumer ever appears, the slot must become an ordered chain in core first.
 
 ## Validate
 

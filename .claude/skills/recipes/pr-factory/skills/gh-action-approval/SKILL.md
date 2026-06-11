@@ -53,7 +53,7 @@ cp $SKILL/files/src/modules/pr-factory/gh-users.sample.json src/modules/pr-facto
 
 ### 2. Append the modules-barrel line (`src/modules/index.ts`)
 
-After the `import './pr-factory/index.js';` line, append:
+After the `import './pr-factory/index.js';` line, append (skip if already present):
 
 ```typescript
 import './pr-factory/gh-action-approval.js';

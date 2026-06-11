@@ -34,6 +34,8 @@ Any open `pr_gh` approval cards become dead after removal (the handler is gone).
 
 ## 6. Restart and validate
 
+> **Skip this step during full-recipe removal.** When tearing down the whole PR Factory, the remaining components still reference seams that are being removed — a build mid-teardown is expected to be red. Only the recipe-level validation at the end binds. Run the block below only when removing `gh-action-approval` in isolation.
+
 ```bash
 launchctl kickstart -k gui/$(id -u)/com.nanoclaw   # macOS
 # systemctl --user restart nanoclaw                # Linux

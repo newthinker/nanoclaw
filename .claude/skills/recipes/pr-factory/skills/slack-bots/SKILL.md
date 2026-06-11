@@ -74,7 +74,9 @@ import './slack-tester.js';
 
 Three lines into the stock `/add-slack` file, so the worker joins the shared sibling-suppression Set and gets the echo guard.
 
-**3a.** Append to the import block:
+> **Do not re-run `/add-slack`'s copy step after this.** `/add-slack` rewrites `src/channels/slack.ts` from scratch, silently dropping these three lines — the worker then echo-loops with its siblings. `src/channels/slack-ignore-senders.test.ts` catches it (the factory's `auth.test` registration no longer lands in the shared Set), but re-apply this patch immediately if you ever re-run `/add-slack`.
+
+**3a.** Append to the import block (skip if already present):
 
 ```typescript
 import { slackBotUserIds, registerSlackBotUserId, withSiblingEchoGuard } from './slack-bot-ids.js';
@@ -96,7 +98,7 @@ If the stock file's shape has drifted cosmetically (formatting, extra config fie
 
 ### 4. Router suppression hunk (`src/router.ts`)
 
-**4a.** Append to the import block:
+**4a.** Append to the import block (skip if already present):
 
 ```typescript
 import { hasSiblingMention } from './channels/sibling-mention.js';
@@ -120,7 +122,7 @@ Insert one line between them:
 
 ### 5. Register the legacy-upgrade migration (`src/db/migrations/index.ts`)
 
-**5a.** Append to the import block:
+**5a.** Append to the import block (skip if already present):
 
 ```typescript
 import { moduleSlackBotsBotIdToInstance } from './module-slack-bots-bot-id-to-instance.js';
@@ -178,7 +180,7 @@ If the install previously ran the legacy pre-instance multi-bot substrate (`mess
 
 ## Known smell (declared)
 
-`src/channels/sibling-mention.ts` performs a raw SQL read against the core central DB (`messaging_groups` joined to `messaging_group_agents`) — skill-guidelines anti-pattern #4. The logic lives in the skill-owned file so the core touch is a one-line call, but the clean fix is a core helper in `src/db/messaging-groups.ts` (e.g. `countSiblingMentionBots(channelType, platformId, instance)`), a natural follow-on to the channel-instance substrate; it is tracked as an upstream carve-out. Until then the query lives here, guarded by `src/router-sibling-mention.test.ts`.
+`src/channels/sibling-mention.ts` performs a raw SQL read against the core central DB (`messaging_groups` joined to `messaging_group_agents`) — skill-guidelines anti-pattern #4. The logic lives in the skill-owned file so the core touch is a one-line call, but the clean fix is a core helper in `src/db/messaging-groups.ts` (e.g. `countSiblingMentionBots(channelType, platformId, instance)`), a natural follow-on to the channel-instance substrate. Until then the query lives here, guarded by `src/router-sibling-mention.test.ts`.
 
 ## Validate
 

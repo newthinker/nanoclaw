@@ -65,6 +65,8 @@ launchctl kickstart -k gui/$(id -u)/com.nanoclaw   # macOS
 
 ## 8. Validate
 
+> **Skip this step during full-recipe removal.** When you are removing the whole PR Factory (per the recipe REMOVE.md), the other components are still mid-teardown and reference seams this component owns — a build here is expected to be red. Only the recipe-level validation at the end binds. Run the block below only when removing `pr-factory-core` in isolation.
+
 ```bash
 pnpm run build && pnpm test
 pnpm exec tsc -p container/agent-runner/tsconfig.json --noEmit

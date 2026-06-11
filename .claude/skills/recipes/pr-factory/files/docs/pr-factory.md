@@ -15,6 +15,8 @@ GitHub webhook ──▶ NanoClaw host ──▶ Slack thread per PR (worker bot
                                   └── tester agent container (runs plan, submits results)
 ```
 
+**One instance, one repository.** A factory instance serves a single repository — the one in `PR_FACTORY_DEFAULT_REPO`, the one its GitHub webhook is attached to. All run state (per-PR sessions, test VMs, the 30-minute timeouts) is keyed per-PR *within that repo*; PR numbers collide across repos, so one instance cannot safely fan out to several. Cover more repositories by running more instances, each with its own channels, bots, and `PR_FACTORY_DEFAULT_REPO`.
+
 ---
 
 ## Table of Contents
@@ -44,7 +46,7 @@ GitHub webhook ──▶ NanoClaw host ──▶ Slack thread per PR (worker bot
 
 ## Components and Seams
 
-`pr-factory-core` is the engine; the three optional components register against seams core owns, at import time, and core degrades gracefully when they are absent:
+`pr-factory-core` is the engine; the three seam components register against seams core owns, at import time, and core degrades gracefully when any is absent (so a partial install still runs — but the recipe is meant to be applied whole, since its composed-stack tests assume every component is present):
 
 | Seam (core file) | Registered by | Without the component |
 |---|---|---|
@@ -71,7 +73,7 @@ All read from `.env` (via `readEnvFile`) or `process.env`. The module is **inert
 | `PR_FACTORY_DEFAULT_REPO` | No | Repo assumed when an MCP action omits `repo`. No built-in default — set it (e.g. `acme/widgets`) or always pass `repo` explicitly |
 | `PR_FACTORY_REPO_MIRROR_DIR` | No | Local clone refreshed before each triage (default: `data/repo-mirror`; no-op when absent) |
 | `PR_FACTORY_REVIEW_SKILL` | No | Operator-supplied container skill that owns the review workflow (see [The Worker's Review Workflow](#the-workers-review-workflow)) |
-| `PR_FACTORY_GH_REPO_ALLOWLIST` | No | Comma-separated `owner/name` list; approved `gh` commands referencing other repos are refused (`gh-action-approval`) |
+| `PR_FACTORY_GH_REPO_ALLOWLIST` | No | The repos the approved `gh` actions may touch — a comma-separated `owner/name` list; an approved `gh` command referencing a repo outside it is refused before execution (`gh-action-approval`). This is a write-target guard, **not** a multi-repo switch: a factory instance still serves the one repo in `PR_FACTORY_DEFAULT_REPO` |
 | `PR_FACTORY_TEST_VM_TEMPLATE` | For testing | Template VM cloned per test run. Test runs fail gracefully without it |
 | `PR_FACTORY_TEST_SSH_HOST` | No | VM control-plane SSH host (default: `exe.dev`) |
 | `PR_FACTORY_TEST_SSH_KEY` | No | SSH identity file for the control plane (default: ssh's own identities) |
@@ -240,6 +242,15 @@ Diff/stats fetches route through the OneCLI gateway's HTTP forward proxy so the 
 
 If any piece is unavailable the module falls back to direct unauthenticated GitHub calls (60 req/h instead of 5000).
 
+### Security model: the GitHub token must be read-only
+
+The PAT in the vault — the one injected into worker/tester containers and used for these host-side fetches — **must be fine-grained and read-only** (`Contents: read`, `Pull requests: read`, `Metadata: read`; no write, no merge, no admin), scoped to the single repository the factory serves. This is the boundary that makes the autonomous parts of the pipeline safe:
+
+- The worker reads diffs and runs read-only `gh` lookups with this token. It cannot comment, label, approve, close, or merge with it — those calls 403 at GitHub.
+- **All writes go through `credentialed_gh` only**, behind a human approval card, executed under the *approving human's* gh credentials (the `gh-action-approval` component), not the injected token.
+
+So even if a malicious PR diff or a confused worker tries to act on GitHub directly, the worst it can do is read. Provisioning a write-capable token defeats the entire approval-gate design — it would let an agent merge to `main` without a human ever clicking a card. Treat "the injected GitHub token is read-only" as a hard invariant, not a recommendation.
+
 ---
 
 ## The Worker's Review Workflow
@@ -247,7 +258,7 @@ If any piece is unavailable the module falls back to direct unauthenticated GitH
 The worker runs inside a container as a standard NanoClaw agent. Its triage/review/test-plan behavior is **group instructions, not shipped container skills** — two override levels:
 
 1. **Default (shipped):** `src/modules/pr-factory/worker-instructions.ts` is seeded into `groups/pr-factory-worker/CLAUDE.local.md` on first bootstrap and never overwritten. It carries a three-stage triage workflow (high-level read → author assessment → categorize and decide CLOSE / MERGE / REVIEW), a review stage, and a test-plan stage, plus the hard constraints (never act on GitHub directly — every write goes through `credentialed_gh`; all output to the PR thread). **Edit that file** to tune trusted contributors, merge policy, and review depth for your repo.
-2. **Operator skill:** set `PR_FACTORY_REVIEW_SKILL=<skill-name>` (and add that skill to the worker group's container config). Every PR trigger then opens with `Use the /<skill-name> skill …` and the seeded defaults are ignored. This is the path for operators who maintain their own tuned review pipeline as a container skill.
+2. **Operator skill:** write the skill to `container/skills/<skill-name>/` and set `PR_FACTORY_REVIEW_SKILL=<skill-name>`. Every PR trigger then opens with `Use the /<skill-name> skill …` and the seeded defaults are ignored. This is the path for operators who maintain their own tuned review pipeline as a container skill. With the worker group's default `skills: 'all'` selection the new folder reaches the worker on its next container start — no container-config change is needed unless the group uses an explicit `skills` allowlist.
 
 Test plan files are written to `/workspace/agent/test-plans/` (host path: `groups/pr-factory-worker/test-plans/`) with the `.md.pending` suffix; the host's testing gate looks them up by PR number.
 
@@ -414,6 +425,35 @@ tail -f data/pr-activity/<owner>/<repo>/*.log     # all PRs
 
 ---
 
+## Operational notes for adopters
+
+Practical things to know before you run this on a real repo.
+
+### `gh` in the worker container
+
+The default worker workflow runs read-only `gh` lookups inside the worker container. The stock agent image **does not ship `gh`** (its apt block installs `git`, `curl`, `chromium`, `tini`, `unzip`; the Node-CLI block installs `claude-code` / `agent-browser` / `vercel`). Either add `gh` to `container/Dockerfile` (pinned via a new `ARG`, then `./container/build.sh`) or supply a review skill that uses the GitHub REST API through the OneCLI proxy instead. Whichever you pick, the read-only GitHub credential must reach the container so the calls authenticate — and writes still go only through `credentialed_gh`.
+
+### Tester → VM SSH access
+
+The tester agent SSHes from inside its container to the cloned VM (`TEST_VM_SSH_USER@<TEST_VM_HOST_TEMPLATE>`) to run the plan. Provision a private key into the `pr-tester` group's container with the matching public key in the VM's `authorized_keys` (the host's own key handles the host→control-plane clone/reap leg separately). Add a `known_hosts` entry or `StrictHostKeyChecking accept-new` so the first connection doesn't hang on a prompt. Without this the VM reports ready but the tester can't log in, and the run hits the 30-minute timeout. Details in the `vm-test-orchestrator` SKILL.md.
+
+### Host restart drops in-flight test runs
+
+The test queue, the per-run timeouts, and the live-VM registry are all in-process state — a host restart loses them. An approved test run that was executing when the host went down is **not resumed**: its timeout timer is gone (so no timeout message ever posts), the queue is empty on reboot, and the VM that was cloned for it is **orphaned** — still running on the provider, no longer tracked by the pool. Recovery is manual: list ephemeral VMs on the control plane and `rm` any that no longer correspond to an open PR (they are tagged `ephemeral`; `destroyVm` runs on PR close/merge for tracked ones, but an orphan won't be reaped automatically). Re-approve the test plan from the PR thread to start a fresh run.
+
+### Cost and scale
+
+- **One container per PR.** Each open PR gets its own worker session/container; a burst of PRs is a burst of concurrent containers and LLM sessions.
+- **Full-diff LLM sessions.** The worker is seeded with the PR diff (truncated at 50k chars) and reasons over it — token cost scales with diff size and review depth, per PR.
+- **Re-triage on every push.** A `synchronize` event (new commits) kills the session and re-runs triage against the fresh diff, so an actively-pushed PR is re-reviewed repeatedly.
+- **Single-repo throughput.** A factory instance serves one repo (see "One instance, one repository"); throughput is bounded by that repo's PR/push rate and your container/LLM concurrency budget. Scale out with more instances for more repos, not more load per instance.
+
+### Single trust domain
+
+The factory registers host-wide delivery actions (`pr_*`) and seam providers that **trust every agent group on the host** — any agent group that emits a `pr_*` system action is serviced, and the gh/skill-edit/test gates act on whatever session calls them. There is no per-group authorization on these actions beyond the human approval cards. Run the PR Factory on a host you control, with agent groups you trust; do not co-locate it with untrusted or third-party agent groups.
+
+---
+
 ## File Map
 
 ### Host (src/modules/pr-factory/) — by component
@@ -446,7 +486,7 @@ tail -f data/pr-activity/<owner>/<repo>/*.log     # all PRs
 |------|---------|
 | `src/db/pr-threads.ts` | CRUD for pr_threads |
 | `src/db/migrations/module-pr-factory-pr-threads-v2.ts` | Creates pr_threads (drops the legacy bot column on legacy-substrate upgrades) |
-| `src/db/migrations/module-slack-bots-bot-id-to-instance.ts` | Fork-upgrade: bot_id substrate → instance substrate |
+| `src/db/migrations/module-slack-bots-bot-id-to-instance.ts` | Legacy-upgrade: bot_id substrate → instance substrate |
 | `src/db/sessions.ts` | (+4 appended pending_approvals helpers) |
 
 ### Container
