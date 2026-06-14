@@ -400,10 +400,18 @@ export function verifyCodexInstall(): { ok: boolean; problems: string[] } {
     }
   }
 
-  const dockerfilePath = path.join(root, 'container', 'Dockerfile');
-  const dockerfile = fs.existsSync(dockerfilePath) ? fs.readFileSync(dockerfilePath, 'utf-8') : '';
-  if (!/ARG CODEX_VERSION=/.test(dockerfile) || !dockerfile.includes('@openai/codex@${CODEX_VERSION}')) {
-    problems.push('container/Dockerfile missing the pinned @openai/codex install');
+  const manifestPath = path.join(root, 'container', 'cli-tools.json');
+  let hasCodexCli = false;
+  if (fs.existsSync(manifestPath)) {
+    try {
+      const tools = JSON.parse(fs.readFileSync(manifestPath, 'utf-8')) as Array<{ name?: string }>;
+      hasCodexCli = Array.isArray(tools) && tools.some((t) => t.name === '@openai/codex');
+    } catch {
+      hasCodexCli = false;
+    }
+  }
+  if (!hasCodexCli) {
+    problems.push('container/cli-tools.json missing the @openai/codex CLI entry');
   }
 
   return { ok: problems.length === 0, problems };
