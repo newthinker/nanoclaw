@@ -123,6 +123,14 @@ export interface AgentQuery {
   abort(): void;
 }
 
+/** Token usage for one exchange, as exposed by the SDK `result` message. */
+export interface UsageInfo {
+  input_tokens?: number;
+  output_tokens?: number;
+  cache_creation_input_tokens?: number;
+  cache_read_input_tokens?: number;
+}
+
 export type ProviderEvent =
   | { type: 'init'; continuation: string }
   /**
@@ -131,7 +139,7 @@ export type ProviderEvent =
    * poll-loop uses it to surface the result text to the user instead of
    * dropping it as un-wrapped scratchpad, and to skip the re-wrap nudge.
    */
-  | { type: 'result'; text: string | null; isError?: boolean }
+  | { type: 'result'; text: string | null; isError?: boolean; usage?: UsageInfo }
   | { type: 'error'; message: string; retryable: boolean; classification?: string }
   | { type: 'progress'; message: string }
   /**
