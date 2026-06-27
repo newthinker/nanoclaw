@@ -431,6 +431,8 @@ export class ClaudeProvider implements AgentProvider {
     async function* translateEvents(): AsyncGenerator<ProviderEvent> {
       let messageCount = 0;
       for await (const message of sdkResult) {
+        // GAUGE-PROBE (temporary, removed in Task 2)
+        console.error('[gauge-probe]', message.type, JSON.stringify(message).slice(0, 2000));
         if (aborted) return;
         messageCount++;
 
