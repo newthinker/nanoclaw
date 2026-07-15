@@ -152,6 +152,14 @@ RUN mkdir -p /workspace/group /workspace/extra && \
 USER node
 WORKDIR /workspace/group
 
+# ---- Exa MCP registration (Loom Tier A) --------------------------------------
+# Register the Exa MCP endpoint into the node user's home-scoped mcporter config
+# at build time (writes a definition only — no network; OAuth/calls happen at
+# runtime). Powers the Exa search + WeChat-article channels. Run after USER node
+# so the config lands under /home/node.
+RUN mcporter config add exa --url https://mcp.exa.ai/mcp --scope home \
+        --description "Exa MCP (Loom Tier A: 全网搜索 + 微信公众号)"
+
 # tini is PID 1, reaps zombies, forwards signals cleanly. entrypoint.sh does
 # `exec bun ...` so bun runs as tini's direct child.
 ENTRYPOINT ["/usr/bin/tini", "--", "/app/entrypoint.sh"]
