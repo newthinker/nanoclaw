@@ -106,6 +106,35 @@ COPY cli-tools.json install-cli-tools.sh /tmp/
 RUN --mount=type=cache,target=/root/.cache/pnpm \
     sh /tmp/install-cli-tools.sh /tmp/cli-tools.json
 
+# ---- Loom AgentReach Tier A tools --------------------------------------------
+# Zero-auth channel tools固化进镜像, every version explicitly pinned. Upgrade =
+# rebuild image on the host (bump the ARGs below); in-container self-upgrade is
+# forbidden (enforced by skills/agent-reach/SKILL.md纪律②). yt-dlp / feedparser
+# are Python; they live in a dedicated venv so they never collide with the Node
+# runtime. gh is pinned to a release tarball because the apt repo only keeps
+# `latest` — an apt pin would drift on every rebuild. mcporter (Exa MCP client)
+# is pinned via cli-tools.json (json-merge) alongside the other Node CLIs.
+ARG GH_VERSION=2.96.0
+ARG YTDLP_VERSION=2025.5.22
+ARG FEEDPARSER_VERSION=6.0.12
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    apt-get update && apt-get install -y --no-install-recommends \
+        python3 \
+        python3-venv \
+    && ARCH="$(dpkg --print-architecture)" \
+    && curl -fsSL "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_${ARCH}.tar.gz" -o /tmp/gh.tgz \
+    && tar -xzf /tmp/gh.tgz -C /tmp \
+    && install -m 0755 "/tmp/gh_${GH_VERSION}_linux_${ARCH}/bin/gh" /usr/local/bin/gh \
+    && rm -rf /tmp/gh.tgz "/tmp/gh_${GH_VERSION}_linux_${ARCH}" \
+    && python3 -m venv /opt/tier-a \
+    && /opt/tier-a/bin/pip install --no-cache-dir \
+        "yt-dlp==${YTDLP_VERSION}" \
+        "feedparser==${FEEDPARSER_VERSION}"
+# venv first on PATH so `python3` / `yt-dlp` resolve to the pinned Tier A tools
+# (feedparser is importable via this python3 for the RSS channel).
+ENV PATH="/opt/tier-a/bin:$PATH"
+
 # ---- ncl CLI wrapper ----------------------------------------------------------
 # Actual script lives in the mounted source at /app/src/cli/ncl.ts.
 RUN printf '#!/bin/sh\nexec bun /app/src/cli/ncl.ts "$@"\n' > /usr/local/bin/ncl && \
