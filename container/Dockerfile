@@ -123,7 +123,7 @@ RUN --mount=type=cache,target=/root/.cache/pnpm \
 # `latest` — an apt pin would drift on every rebuild. mcporter (Exa MCP client)
 # is pinned via cli-tools.json (json-merge) alongside the other Node CLIs.
 ARG GH_VERSION=2.96.0
-ARG YTDLP_VERSION=2025.5.22
+ARG YTDLP_VERSION=2026.7.4
 ARG FEEDPARSER_VERSION=6.0.12
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
