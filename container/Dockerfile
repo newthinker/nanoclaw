@@ -26,6 +26,14 @@ ARG BUN_VERSION=1.3.12
 # ---- System dependencies -----------------------------------------------------
 # tini: correct PID 1 / signal forwarding so outbound.db writes finalize on
 # SIGTERM instead of being orphaned by the shell entrypoint.
+#
+# apt resilience: the debian base ships docker-clean, which deletes fetched
+# .debs and defeats the /var/cache/apt cache mount below — every retry after a
+# flaky-mirror failure refetches all ~200MB. Keep downloaded packages (the
+# cache mount already scopes them) and retry per-file on transient CDN 502s.
+RUN rm -f /etc/apt/apt.conf.d/docker-clean \
+    && printf 'Binary::apt::APT::Keep-Downloaded-Packages "true";\n' > /etc/apt/apt.conf.d/90-keep-cache \
+    && printf 'Acquire::Retries "5";\n' > /etc/apt/apt.conf.d/90-retries
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
     apt-get update && apt-get install -y --no-install-recommends \
