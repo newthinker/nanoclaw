@@ -165,8 +165,15 @@ WORKDIR /workspace/group
 # at build time (writes a definition only — no network; OAuth/calls happen at
 # runtime). Powers the Exa search + WeChat-article channels. Run after USER node
 # so the config lands under /home/node.
+#
+# World-readable on purpose: the host spawns this container with the HOST uid
+# (e.g. 501) for mount-permission alignment, not the build-time `node` (1000) —
+# mcporter's default 600 file would EACCES at runtime (seen live in H5). The
+# config holds only the public endpoint URL, no credentials.
 RUN mcporter config add exa --url https://mcp.exa.ai/mcp --scope home \
-        --description "Exa MCP (Loom Tier A: 全网搜索 + 微信公众号)"
+        --description "Exa MCP (Loom Tier A: 全网搜索 + 微信公众号)" \
+    && chmod 755 /home/node/.mcporter \
+    && chmod 644 /home/node/.mcporter/mcporter.json
 
 # tini is PID 1, reaps zombies, forwards signals cleanly. entrypoint.sh does
 # `exec bun ...` so bun runs as tini's direct child.
