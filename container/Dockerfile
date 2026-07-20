@@ -172,6 +172,8 @@ WORKDIR /workspace/group
 # config holds only the public endpoint URL, no credentials.
 RUN mcporter config add exa --url https://mcp.exa.ai/mcp --scope home \
         --description "Exa MCP (Loom Tier A: 全网搜索 + 微信公众号)" \
+    && mcporter config add weibo --url http://host.docker.internal:18061/mcp --scope home \
+        --description "Weibo MCP (Loom Tier A: 热搜/搜索;宿主常驻 streamable-http 服务)" \
     && chmod 755 /home/node/.mcporter \
     && chmod 644 /home/node/.mcporter/mcporter.json
 
