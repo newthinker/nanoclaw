@@ -12,6 +12,7 @@
      `<!-- /narrative -->` 两行本身）。封条是「删除类篡改」的唯一防线。
 """
 import argparse
+import datetime
 import hashlib
 import json
 import re
@@ -391,7 +392,11 @@ def main():
     ap.add_argument("contract")
     ap.add_argument("history", nargs="?")
     ap.add_argument("--existing")
-    ap.add_argument("--now", default="")
+    # 🔴 缺省取当天，不是空串（M3 的 TASK-005 订正）：SKILL.md Step 3 的调用行**不传 `--now`**，
+    # 而 `created` / `updated` 是 note-format.md 列的 vault 必填字段 —— 缺省为空会产出
+    # 必需字段为空的笔记，且**静默**。取当天则「某个测试忘传 --now」会让 golden 逐字节比对
+    # 当场变红，是**响的**失败。两种失败模式不对称，故选前者。
+    ap.add_argument("--now", default=datetime.date.today().isoformat())
     ap.add_argument("--print-name", action="store_true")
     args = ap.parse_args()
 

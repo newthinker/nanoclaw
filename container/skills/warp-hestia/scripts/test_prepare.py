@@ -127,7 +127,7 @@ class ModuleInterface(unittest.TestCase):
 
 
 class PrintName(unittest.TestCase):
-    """functional[1]：--print-name 取无月份版（TASK-005 的 G6b 裁决）。"""
+    """functional[1]：--print-name 取无月份版（M3 的 TASK-005 的 G6b 裁决）。"""
 
     def test_h1_has_no_month(self):
         out = run([PREP, f"{FIX}/2026-06-h1.json", f"{FIX}/2026-06-h1.history.json",
@@ -266,6 +266,22 @@ class Frontmatter(unittest.TestCase):
             with self.subTest(k):
                 self.assertIn(k, self.f)
                 self.assertIn(self.f[k], ("green", "yellow", "red", "unknown"))
+
+    def test_created_updated_nonempty_without_now_flag(self):
+        """🔴 test-m3-a 在 TASK-006 验证中发现：`--now` 缺省为空串，而 SKILL.md Step 3 **不传它**
+        ⇒ 实产笔记的 `created` / `updated` 两个都是空值。原有断言只查**键存在**（14 个键确实都在）
+        ⇒ 「键存在但值为空」这个形态**恒真、零覆盖**。这里断言非空且等于当天。"""
+        import datetime
+        out = run([PREP, f"{FIX}/2026-06-h1.json", f"{FIX}/2026-06-h1.history.json"]).stdout
+        f = fm(out)
+        today = datetime.date.today().isoformat()
+        self.assertEqual(f["created"], today)
+        self.assertEqual(f["updated"], today)
+
+    def test_explicit_now_still_wins(self):
+        """显式传 `--now` 时仍以它为准（golden 就是靠这个稳定的）。"""
+        self.assertEqual(self.f["created"], "2026-09-12")
+        self.assertEqual(self.f["updated"], "2026-09-12")
 
     def test_no_reviewed_no_source(self):
         self.assertNotIn("reviewed", self.f)
