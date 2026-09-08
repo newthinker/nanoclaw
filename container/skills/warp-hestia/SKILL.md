@@ -57,10 +57,12 @@ mv $Q/pending/$F $Q/pending/$H $Q/processing/
 **Step 3 组装**
 
 ```bash
-N=<按 references/note-format.md 的命名规则算出的笔记文件名>
+N=$(python3 /app/skills/warp-hestia/scripts/prepare.py --print-name $Q/processing/$F)
 EXISTING=/workspace/extra/vault/Wiki/Macro/PBOC/$N
 python3 /app/skills/warp-hestia/scripts/prepare.py $Q/processing/$F $Q/processing/$H ${EXISTING:+--existing "$EXISTING"} > /tmp/note.md
 ```
+
+🔴 **`$N` 必须由 `prepare.py --print-name` 打印，不要自己按命名规则拼**——命名规则有五种 `period_type` 分支且只有 `monthly` 带月份，拼错会让 Step 5 的 `mode` 跟着判错（把 `update` 判成 `create`，Spool 会拒绝覆盖已存在的笔记）。规则见 `references/note-format.md`「命名规则」，那里也说明了为什么由脚本打印。
 
 `prepare.py` **退出码非零** ⇒ 把 stderr **原文**回复用户，契约与侧车**对移 `failed/`**，结束。
 
