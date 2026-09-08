@@ -268,7 +268,7 @@ class Frontmatter(unittest.TestCase):
                 self.assertIn(self.f[k], ("green", "yellow", "red", "unknown"))
 
     def test_created_updated_nonempty_without_now_flag(self):
-        """🔴 test-m3-a 在 TASK-006 验证中发现：`--now` 缺省为空串，而 SKILL.md Step 3 **不传它**
+        """🔴 验证者在 M3 的 TASK-005 的 prepare 部分验收时发现：`--now` 缺省为空串，而 SKILL.md Step 3 **不传它**
         ⇒ 实产笔记的 `created` / `updated` 两个都是空值。原有断言只查**键存在**（14 个键确实都在）
         ⇒ 「键存在但值为空」这个形态**恒真、零覆盖**。这里断言非空且等于当天。"""
         import datetime
