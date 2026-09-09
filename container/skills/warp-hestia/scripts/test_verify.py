@@ -259,6 +259,41 @@ class Boundary(unittest.TestCase):
         r = verify_text(self.md.replace(line + "\n", line + "\n" + line + "\n", 1))
         self.assertEqual(r.returncode, 1)
 
+    def test_content_between_seal_and_end_rejected(self):
+        """🔴 F3（M3 的 TASK-005 返工）：`<!-- seal: … -->` 与 `<!-- machine-generated: end -->`
+        之间的文本**既不被任何分段 check 覆盖，也不被封条覆盖**——封条作用域到 seal 行**之前**为止。
+        ⇒ 可以在**机器区内部**插入伪造数据表而 verify 放行。
+
+        它比已登记的 frontmatter 盲区更危险：读者看到的是一张**位于机器区里**的表，
+        比 frontmatter 更像「机器产的」。
+
+        修法是**形状断言**（seal 必须紧邻 end 之上），**不动摘要算法** ⇒ 两份 golden 不受影响。"""
+        lines = self.md.splitlines(keepends=True)
+        seal_i = next(i for i, l in enumerate(lines) if l.startswith("<!-- seal: "))
+        end_i = next(i for i, l in enumerate(lines)
+                     if l.rstrip("\n") == "<!-- machine-generated: end -->")
+        self.assertEqual(end_i, seal_i + 1, "夹具前提：合规笔记里 seal 就在 end 上一行")
+
+        fake = ("\n## 本期数据（口径修订后）\n\n| 指标 | 单位 | 本期 |\n"
+                "| --- | --- | ---: |\n| M1 同比 | 百分数 | 8.80 |\n\n")
+        r = verify_text("".join(lines[:seal_i + 1]) + fake + "".join(lines[seal_i + 1:]))
+        self.assertEqual(r.returncode, 1, "seal 与 end 之间插入内容必须红")
+        self.assertIn("seal", r.stdout + r.stderr)
+
+    def test_any_line_between_seal_and_end_rejected(self):
+        """不限于伪造表——**任何**内容都不行，包括一行空白或一句注释。"""
+        lines = self.md.splitlines(keepends=True)
+        seal_i = next(i for i, l in enumerate(lines) if l.startswith("<!-- seal: "))
+        for injected in ["\n", "随便一行文字\n", "<!-- 无害注释 -->\n"]:
+            with self.subTest(injected.strip()[:12] or "空行"):
+                r = verify_text("".join(lines[:seal_i + 1]) + injected
+                                + "".join(lines[seal_i + 1:]))
+                self.assertEqual(r.returncode, 1)
+
+    def test_seal_immediately_above_end_passes(self):
+        """反方向：合规笔记（seal 紧邻 end 之上）不受影响。"""
+        self.assertEqual(verify_text(self.md).returncode, 0)
+
     def test_annotation_area_not_verified(self):
         """批注区是人写的、每次都会变 ⇒ 不参与校验。"""
         self.assertTrue(self.md.rstrip().endswith("（手写区，永不被覆盖）"))

@@ -121,6 +121,19 @@ def verify(md, path):
 
     # (iii) 验封条
     seal_i, seal_hex = seals[0]
+
+    # 🔴 形状断言（M3 的 TASK-005 返工，F3）：seal 行必须**紧邻 end 之上**。
+    # 缺陷形态：封条作用域到 seal 行**之前**为止 ⇒ seal 与 end 之间的文本
+    # **既不被任何分段 check 覆盖、也不被封条覆盖**，可以在**机器区内部**插入
+    # 一张伪造数据表而 verify 放行（实测 exit 0）。它比 frontmatter 盲区更危险：
+    # 读者看到的是一张**位于机器区里**的表，比 frontmatter 更像「机器产的」。
+    # ⚠️ 这是**形状**判定，不触碰摘要算法 —— 两份 golden 不受影响。
+    if seal_i + 1 != end_i:
+        return fail("seal 行之后仍有内容：seal 在第 %d 行，而 `%s` 在第 %d 行，"
+                    "中间夹着 %d 行 —— 判为被篡改。\n"
+                    "封条的作用域到 seal 行**之前**为止，这中间的文本不受任何校验保护，"
+                    "故要求 seal 行必须紧邻机器区结束标记之上。"
+                    % (seal_i + 1, prepare.END, end_i + 1, end_i - seal_i - 1))
     want_seal = prepare.seal_digest(md)
     if want_seal != seal_hex:
         return fail("封条 seal 不匹配（第 %d 行）——机器区有删除或改动，且不在任何 check 的覆盖范围内：\n"

@@ -215,6 +215,39 @@ def _pick(values, ytd, mom):
     return None, ""
 
 
+def pair_key(contract):
+    """契约在侧车里的标识：`<period>-<period_type>`，与 atlas `history.go` 写出的 `for` 同构。"""
+    return "%s-%s" % (contract["period"], contract["period_type"])
+
+
+def assert_pair(contract, history):
+    """🔴 校验契约与侧车**确实是一对**（M3 的 TASK-005 返工，F2）。
+
+    缺陷形态：本函数不存在时，`prepare.py` 从 history 上只读 `same_type`，
+    侧车顶层的 `for` 字段**被读 0 次** ⇒ 错配的一对喂进去，prepare 与 verify **双双 exit 0**，
+    而 frontmatter / 标题 / 四信号 / 温度全对（都来自契约）、**两张表全错**（都来自侧车）
+    ——笔记自洽地看起来完全正常。实测：`2026-06-h1.json × 2025-12-annual.history.json`
+    产出 3161 字节、verify exit 0，笔记自称 `2026-06/h1` 而前 12 期表全是 annual 期次，
+    连本期数据表的「上期」列也变成了 2024-12。
+
+    ⚠️ **污染面不止「前 12 期」表**：`render_table_current` 的上期/去年同期两列同样取自
+    `same_type`（`series[0]` 就是上期），而那是解读的起点。
+
+    `for` 是这条链路上**唯一能机器判定「这两个文件是一对」的事实**。
+    ⚠️ 判据是 `for == period + "-" + period_type`，**不是文件名**——修订夹具叫
+    `2025-12-annual-rev.*` 而它的 `for` 是 `2025-12-annual`，拿文件名判会误拒。
+
+    返回 (ok, message)；不成立时由 main 打印 message 并 exit 2。
+    """
+    want = pair_key(contract)
+    got = history.get("for")
+    if got == want:
+        return True, ""
+    return False, ("契约与侧车不是一对：契约是 %s，而侧车的 for 是 %r。\n"
+                   "两张表全部取自侧车，错配会产出「自洽但表全错」的笔记（frontmatter 与信号来自契约、"
+                   "两张表来自侧车），故拒绝。" % (want, got))
+
+
 def _series(history):
     """🔴 **一律取 `same_type`**——它就是「同类型前 12 期」。
     `monthly_recent` 在 `period_type == monthly` 时被**刻意省略**（Atlas 侧 `omitzero`，
@@ -419,6 +452,11 @@ def main():
             history = json.load(fh)
     except (OSError, ValueError) as err:
         sys.stderr.write("history 侧车读取或解析失败: %s\n" % err)
+        return 2
+
+    ok, msg = assert_pair(contract, history)
+    if not ok:
+        sys.stderr.write(msg + "\n")
         return 2
 
     existing_md = ""

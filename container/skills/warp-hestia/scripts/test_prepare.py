@@ -335,6 +335,81 @@ class Frontmatter(unittest.TestCase):
         self.assertIn("八问", seg)
 
 
+class PairingGuard(unittest.TestCase):
+    """F2（M3 的 TASK-005 返工）：契约与侧车的**配对**必须被校验。
+
+    🔴 缺陷形态：`prepare.py` 从 history 上只读 `same_type`，侧车顶层的 `for` 字段
+    （atlas `history.go` 写出，值形如 `2026-06-h1`）**被读 0 次** ⇒ 错配的一对喂进去，
+    prepare 与 verify **双双 exit 0**，而 frontmatter/标题/四信号/温度全对（都来自契约）、
+    **两张表全错**（都来自侧车）——笔记自洽地看起来完全正常。
+    这是这条链路上**唯一能机器判定「这两个文件是一对」的事实**。"""
+
+    def test_mismatched_pair_exits_2(self):
+        r = run([PREP, f"{FIX}/2026-06-h1.json", f"{FIX}/2025-12-annual.history.json",
+                 "--now", "2026-09-12"], check=False)
+        self.assertEqual(r.returncode, 2, "错配的契约×侧车必须被拒绝")
+        err = r.stderr
+        self.assertIn("2026-06-h1", err, "报错要打印契约侧的期望值")
+        self.assertIn("2025-12-annual", err, "报错要打印侧车实际的 for")
+        self.assertEqual(r.stdout, "", "被拒绝时不得产出半份笔记")
+
+    def test_matched_pairs_unaffected(self):
+        """正配的五期一条都不能变红。"""
+        for name in ["2020-06-h1", "2025-12-annual", "2026-06-h1",
+                     "2023-08-monthly", "2022-07-monthly"]:
+            with self.subTest(name):
+                r = run([PREP, f"{FIX}/{name}.json", f"{FIX}/{name}.history.json",
+                         "--now", "2026-09-12"], check=False)
+                self.assertEqual(r.returncode, 0, r.stderr)
+
+    def test_revision_fixture_pairs_by_period_not_filename(self):
+        """🔴 判据是 `for == period + "-" + period_type`，**不是文件名**：
+        修订夹具叫 `2025-12-annual-rev.*` 而它的 `for` 是 `2025-12-annual`——
+        若拿文件名做判据，这一对会被误拒。"""
+        with open(f"{FIX}/2025-12-annual-rev.history.json", encoding="utf-8") as fh:
+            self.assertEqual(json.load(fh)["for"], "2025-12-annual")
+        r = run([PREP, f"{FIX}/2025-12-annual-rev.json",
+                 f"{FIX}/2025-12-annual-rev.history.json", "--now", "2026-09-12"], check=False)
+        self.assertEqual(r.returncode, 0, r.stderr)
+
+    def test_sidecar_for_field_is_actually_read(self):
+        """钉住「`for` 被读到了」这件事本身——缺陷正是它命中 0 次。"""
+        import prepare as P
+        self.assertTrue(hasattr(P, "assert_pair"), "缺少配对校验函数 assert_pair")
+
+
+class ExistingGuard(unittest.TestCase):
+    """F1（M3 的 TASK-005 返工）：`--existing` 指向**不存在**的文件时的契约。
+
+    ⚠️ 现有三处 `--existing` 用例**全部指向存在的文件**，所以这个洞从未被行使——
+    与「一条判据被更早的判据遮蔽」同族：**测试用例的取值分布让某条路径永不发生**。
+    这条测试钉住 prepare.py 的契约，从而让 SKILL.md 那侧的 `[ -f ]` 守卫成为**必需**。"""
+
+    def test_existing_nonexistent_exits_2(self):
+        r = run([PREP, f"{FIX}/2026-06-h1.json", f"{FIX}/2026-06-h1.history.json",
+                 "--now", "2026-09-12", "--existing", "/nonexistent/note.md"], check=False)
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("existing", r.stderr)
+        self.assertEqual(r.stdout, "", "失败时不得产出半份笔记（实测 0 字节）")
+
+    def test_create_scenario_without_existing_works(self):
+        """create 场景（笔记尚不存在）：**不传** --existing ⇒ 正常产出。
+        这正是 SKILL.md 修好后该走的路径。"""
+        r = run([PREP, f"{FIX}/2026-06-h1.json", f"{FIX}/2026-06-h1.history.json",
+                 "--now", "2026-09-12"], check=False)
+        self.assertEqual(r.returncode, 0)
+        self.assertGreater(len(r.stdout), 0)
+        self.assertIn("（手写区，永不被覆盖）", r.stdout, "create 场景批注区是占位文本")
+
+    def test_update_scenario_with_existing_works(self):
+        """update 场景（笔记已存在）：传 --existing ⇒ 批注区被保留。"""
+        r = run([PREP, f"{FIX}/2026-06-h1.json", f"{FIX}/2026-06-h1.history.json",
+                 "--now", "2026-09-12", "--existing", f"{FIX}/existing-2026-06-h1.md"],
+                check=False)
+        self.assertEqual(r.returncode, 0)
+        self.assertIn("这是我手写的第一行批注", r.stdout)
+
+
 class Tables(unittest.TestCase):
     """functional[3]：两张表的结构义务。"""
 
@@ -376,6 +451,16 @@ class Tables(unittest.TestCase):
         """反方向：口径相同的列**不该**有 ⚠️，否则标注就成了噪声。"""
         cells = header_cells(prepare("2026-06-h1"), "本期数据")
         self.assertNotIn("⚠️", "".join(cells))   # ⚠️ 只可能出现在单元格内容里
+
+    def test_current_table_comparison_columns_come_from_same_type(self):
+        """🔴 F2 的污染面**不止**「前 12 期」表：`render_table_current` 的上期/去年同期
+        两列同样取自侧车 `same_type`（`series[0]` 就是上期）⇒ 错配时**本期数据表的对比列
+        也错**，而那是解读的起点。这条把「对比列的来源」钉死。"""
+        h = load_history("2026-06-h1")
+        series = sorted(h["same_type"], key=lambda e: e["meta"]["period"], reverse=True)
+        cells = header_cells(self.md, "本期数据")
+        self.assertTrue(cells[3].startswith("上期 " + series[0]["meta"]["period"]),
+                        f"上期列必须取自 same_type 的最新一期，实际: {cells[3]!r}")
 
     def test_history_table_rows_come_from_sidecar_same_type(self):
         h = load_history("2026-06-h1")

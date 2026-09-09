@@ -59,10 +59,22 @@ mv $Q/pending/$F $Q/pending/$H $Q/processing/
 ```bash
 N=$(python3 /app/skills/warp-hestia/scripts/prepare.py --print-name $Q/processing/$F)
 EXISTING=/workspace/extra/vault/Wiki/Macro/PBOC/$N
-python3 /app/skills/warp-hestia/scripts/prepare.py $Q/processing/$F $Q/processing/$H ${EXISTING:+--existing "$EXISTING"} > /tmp/note.md
+# 🔴 守卫判的是「文件**存在**」，不是「变量非空」——$EXISTING 是无条件赋值、恒非空。
+# ⚠️ 刻意用显式 if/else 而不是数组：空数组的 "${ARR[@]}" 在 bash 3.2（macOS 自带）配 set -u
+# 时会报 unbound variable，而 create 场景下它恰恰是空的。if/else 在 sh / bash 3.2 / zsh 都对。
+if [ -f "$EXISTING" ]; then
+  python3 /app/skills/warp-hestia/scripts/prepare.py $Q/processing/$F $Q/processing/$H --existing "$EXISTING" > /tmp/note.md
+else
+  python3 /app/skills/warp-hestia/scripts/prepare.py $Q/processing/$F $Q/processing/$H > /tmp/note.md
+fi
 ```
 
 🔴 **`$N` 必须由 `prepare.py --print-name` 打印，不要自己按命名规则拼**——命名规则有五种 `period_type` 分支且只有 `monthly` 带月份，拼错会让 Step 5 的 `mode` 跟着判错（把 `update` 判成 `create`，Spool 会拒绝覆盖已存在的笔记）。规则见 `references/note-format.md`「命名规则」，那里也说明了为什么由脚本打印。
+
+🔴 **`--existing` 只在笔记已存在时才传**（M3 的 TASK-005 返工）：`$EXISTING` 是**无条件赋值**、恒非空，
+若用 `${EXISTING:+…}` 判断，**create 场景（每期首次生成，笔记尚不存在）会把不存在的路径传进去**，
+`prepare.py` 返回 2、产出 0 字节，按下面的失败分支每期首次都被移进 `failed/`。
+⇒ 判据必须是 `[ -f "$EXISTING" ]`。**已有笔记的 update 场景本来就是好的**，坏的只有新笔记。
 
 `prepare.py` **退出码非零** ⇒ 把 stderr **原文**回复用户，契约与侧车**对移 `failed/`**，结束。
 
@@ -85,7 +97,9 @@ python3 /app/skills/warp-hestia/scripts/verify.py /tmp/note.md || { echo "数据
 契约本身没毛病；移 `failed/` 会让一份好契约需要人工捞回。留在 `processing/` 则下一次会话按
 Step 2 的「同名已在 processing ⇒ 直接用那对」自然重试。
 
-校验通过后：`mode` 取值——`$EXISTING` 存在 ⇒ `update`，否则 `create`。
+校验通过后：`mode` 取值——**对文件求值**：`[ -f "$EXISTING" ] && mode=update || mode=create`。
+⚠️ 与 Step 3 的守卫**同源同判据**：判「文件存在」而不是「变量非空」，否则每期首次都会误判成 `update`，
+Spool 会因目标不存在而拒绝。
 
 ```
 selvage_call(action="spool.archive",
