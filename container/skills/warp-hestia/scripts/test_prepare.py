@@ -115,7 +115,8 @@ class ModuleInterface(unittest.TestCase):
                 self.assertTrue(callable(getattr(P, name, None)), f"缺函数 {name}")
 
     def test_stdlib_only(self):
-        allowed = {"json", "hashlib", "argparse", "datetime", "re", "os", "sys"}
+        allowed = {"json", "hashlib", "argparse", "datetime", "re", "os", "sys", "math",
+                   "unicodedata"}
         with open(PREP, encoding="utf-8") as fh:
             src = fh.read()
         mods = set()
@@ -505,10 +506,14 @@ class CheckLines(unittest.TestCase):
         self.assertNotIn("<!-- check:", seg)
 
     def test_heading_count_differs_from_check_count(self):
-        """钉住『不能按 `## ` 标题数推 check 行数』：机器区 3 个 `## ` 而 check 恒 2。"""
+        """钉住『不能按 `## ` 标题数推 check 行数』：机器区 5 个 `## ` 而 check 恒 2。
+
+        🔴 2026-09-16 加图表段后由 3 变 5（`## 信号` / `## 趋势` / `## 社融增量结构` 都不发
+        check 行）。**这条测试的价值恰恰在于它会随结构变化而红**——它逼着人重新确认
+        「check 行数不从结构推」这件事仍然成立，而不是让两个数悄悄一起漂。"""
         mz = self.md.split("<!-- machine-generated: begin -->", 1)[1] \
                     .split("<!-- machine-generated: end -->", 1)[0]
-        self.assertEqual(len([l for l in mz.splitlines() if l.startswith("## ")]), 3)
+        self.assertEqual(len([l for l in mz.splitlines() if l.startswith("## ")]), 5)
         self.assertEqual(self.md.count("<!-- check: "), 2)
 
     def test_check_covers_from_previous_heading(self):
@@ -659,3 +664,229 @@ class BadInput(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# ── 图表（M3 后续：笔记加图，2026-09-16）──────────────────────────────────────
+
+def chart_section(md, title):
+    """取 `## <title>` 之后、到下一个 `## ` 或 narrative 开标记之前的正文。
+    图表段不发 check 行（沿 `## 信号` 先例，靠封条保护），所以不能用 section()。"""
+    body = md.split(f"## {title}\n", 1)[1]
+    for stop in ("\n## ", P.NARR_OPEN):
+        if stop in body:
+            body = body.split(stop, 1)[0]
+    return body
+
+
+class Bar(unittest.TestCase):
+    """条形渲染本身。"""
+
+    def test_blocks_scale_with_ratio(self):
+        self.assertEqual(P.bar(0.0, 10), "░░░░░░░░░░")
+        self.assertEqual(P.bar(1.0, 10), "██████████")
+        self.assertEqual(P.bar(0.18, 10), "██░░░░░░░░")
+
+    def test_clamps_out_of_range(self):
+        self.assertEqual(P.bar(-3, 10), "░░░░░░░░░░")
+        self.assertEqual(P.bar(9.9, 10), "██████████")
+
+    def test_none_is_empty_bar(self):
+        self.assertEqual(P.bar(None, 10), "░░░░░░░░░░")
+
+
+class SignalBars(unittest.TestCase):
+    """四信号距绿灯多远——统一语义是「达成度」，绿灯即 100%。"""
+
+    def rows(self, name="2026-06-h1"):
+        md = prepare(name)
+        return [l for l in chart_section(md, "信号").splitlines() if "│" in l or "达成" in l or "%" in l]
+
+    def test_four_rows_one_per_signal(self):
+        body = chart_section(prepare("2026-06-h1"), "信号")
+        for label in ["活化", "楼市", "消费", "信贷"]:
+            self.assertIn(label, body)
+        self.assertIn("达成度", body)
+
+    def test_housing_shows_ratio_to_warm_line(self):
+        """368.67 / 2000 = 18%——红灯也要给出距离，而不是一律 0%。"""
+        body = chart_section(prepare("2026-06-h1"), "信号")
+        self.assertRegex(body, r"楼市.*368\.67.*18%")
+
+    def test_green_signal_is_full(self):
+        """信贷 7.32% < 健康线 10 ⇒ 绿灯 ⇒ 100%。"""
+        body = chart_section(prepare("2026-06-h1"), "信号")
+        self.assertRegex(body, r"信贷.*7\.32.*100%")
+
+    def test_zero_threshold_signal_is_binary(self):
+        """消费的暖身线是 0，达成与否非此即彼（该信号本就没有黄灯）。"""
+        body = chart_section(prepare("2026-06-h1"), "信号")
+        self.assertRegex(body, r"消费.*-980\.17.*0%")
+
+    def test_achievement_helper_covers_all_four_shapes(self):
+        sig = load_fixture("2026-06-h1")["thresholds"]["signals"]
+        self.assertEqual(P.achievement("credit", 7.32, sig), 1.0)          # 绿灯
+        self.assertEqual(P.achievement("credit", 25.0, sig), 0.0)          # 红灯
+        self.assertAlmostEqual(P.achievement("credit", 15.0, sig), 0.5)    # 黄灯线性
+        self.assertAlmostEqual(P.achievement("housing", 368.67, sig), 0.184335)
+        self.assertEqual(P.achievement("consumption", -980.17, sig), 0.0)  # 阈值 0，二值
+        self.assertEqual(P.achievement("consumption", 12.0, sig), 1.0)
+        self.assertEqual(P.achievement("activation", -4.0, sig), 0.0)      # 低于沉淀线
+        self.assertEqual(P.achievement("activation", 1.0, sig), 1.0)
+        self.assertAlmostEqual(P.achievement("activation", -1.0, sig), 0.5)  # 两线之间
+        self.assertIsNone(P.achievement("housing", None, sig))
+
+
+class TrendCharts(unittest.TestCase):
+    """mermaid 折线。Obsidian 1.12 内置 mermaid 支持 xychart-beta，无需插件。"""
+
+    def test_trend_section_has_three_mermaid_blocks(self):
+        body = chart_section(prepare("2026-06-h1"), "趋势")
+        self.assertEqual(body.count("```mermaid"), 3)
+        self.assertEqual(body.count("xychart-beta"), 3)
+
+    def test_scissors_series_ends_with_current_period(self):
+        """侧车只给「之前」的期次，本期必须由契约补在末尾，否则图上看不到当期。"""
+        body = chart_section(prepare("2026-06-h1"), "趋势")
+        block = body.split("```mermaid", 1)[1].split("```", 1)[0]
+        self.assertRegex(block, r"x-axis \[.*2026-06\]")
+        self.assertRegex(block, r"line \[.*-4\]")
+
+    def test_x_axis_ascending(self):
+        body = chart_section(prepare("2026-06-h1"), "趋势")
+        block = body.split("```mermaid", 1)[1].split("```", 1)[0]
+        axis = re.search(r"x-axis \[([^\]]*)\]", block).group(1)
+        periods = [p.strip() for p in axis.split(",")]
+        self.assertEqual(periods, sorted(periods), "x 轴必须按期次升序")
+
+    def test_household_charts_are_single_line_and_named(self):
+        """xychart-beta 没有图例 ⇒ 两条线画一张图无法分辨，必须拆成两张单线图。"""
+        body = chart_section(prepare("2026-06-h1"), "趋势")
+        self.assertIn("住户中长期", body)
+        self.assertIn("住户短期", body)
+        for block in body.split("```mermaid")[2:]:
+            chart = block.split("```", 1)[0]
+            self.assertEqual(chart.count("line ["), 1, "每张图恰一条 line")
+
+    def test_entries_missing_inputs_are_skipped_and_counted(self):
+        contract = load_fixture("2026-06-h1")
+        history = load_history("2026-06-h1")
+        history["same_type"] = list(history["same_type"]) + [
+            {"meta": {"period": "2019-06", "caliber_version": "2015-01"}, "data": {}}]
+        md = P.render_trend_scissors(contract, history)
+        self.assertNotIn("2019-06", md)
+        self.assertIn("共", md)
+
+
+class TSFStructure(unittest.TestCase):
+    """社融增量结构占比（文本条）。"""
+
+    def test_rows_sorted_by_share_descending(self):
+        body = chart_section(prepare("2026-06-h1"), "社融增量结构")
+        shares = [float(m) for m in re.findall(r"(\-?\d+\.\d)%", body)]
+        self.assertGreater(len(shares), 3)
+        self.assertEqual(shares, sorted(shares, reverse=True), "占比必须降序")
+
+    def test_government_bond_share_matches_narrative(self):
+        """叙述里引用的 30.9% 必须与本段算出来的一致，两处不能各算各的。"""
+        body = chart_section(prepare("2026-06-h1"), "社融增量结构")
+        self.assertRegex(body, r"政府债券.*30\.9%")
+
+
+class ChartsProtection(unittest.TestCase):
+    """图表段不发 check 行，靠封条保护——这条要实证，不能只写在文档里。"""
+
+    def test_check_line_count_unchanged(self):
+        md = prepare("2026-06-h1")
+        self.assertEqual(md.count("<!-- check:"), 2, "加图后 check 行仍恰好 2 条")
+
+    def test_charts_live_inside_machine_region_before_narrative(self):
+        md = prepare("2026-06-h1")
+        machine = md.split(P.BEGIN, 1)[1].split(P.NARR_OPEN, 1)[0]
+        self.assertIn("## 趋势", machine)
+        self.assertIn("## 社融增量结构", machine)
+
+    def test_verify_rejects_a_tampered_chart(self):
+        """图表段没有 check 行，保护全靠封条——这条必须实证到 `verify.py` 这一层。
+
+        ⚠️ 不能用 `seal_of()` 比对：它读的是文件里**存储**的封条值，改正文不会改它，
+        那样写出来的断言恒过。要问的是「重算之后 verify 认不认」。"""
+        md = prepare("2026-06-h1")
+        with tempfile.TemporaryDirectory() as d:
+            ok = os.path.join(d, "ok.md")
+            bad = os.path.join(d, "bad.md")
+            with open(ok, "w", encoding="utf-8") as fh:
+                fh.write(md)
+            with open(bad, "w", encoding="utf-8") as fh:
+                fh.write(md.replace("xychart-beta", "xychart-beta\n    %% 伪造", 1))
+            verify = os.path.join(HERE, "verify.py")
+            self.assertEqual(run([verify, ok], check=False).returncode, 0, "未改动的应通过")
+            self.assertEqual(run([verify, bad], check=False).returncode, 1,
+                             "改图表必须被封条拦下，否则机器区出现无保护段")
+
+
+class DisplayWidth(unittest.TestCase):
+    """🔴 中文是双宽字符，`%-Ns` 按**字符数**补齐 ⇒ 列会参差。
+    文本条的全部价值就是一眼扫过去，列不齐等于白画。"""
+
+    @staticmethod
+    def dwidth(s):
+        import unicodedata
+        return sum(2 if unicodedata.east_asian_width(c) in "WF" else 1 for c in s)
+
+    def test_pad_counts_display_columns_not_chars(self):
+        self.assertEqual(self.dwidth(P.pad("政府债券", 16)), 16)
+        self.assertEqual(self.dwidth(P.pad("对实体人民币贷款", 16)), 16)
+        self.assertEqual(self.dwidth(P.pad("abc", 6)), 6)
+
+    def test_pad_does_not_truncate_when_too_long(self):
+        """超宽不截断——截断会把「未贴现承兑汇票」砍成看不懂的半个词。"""
+        self.assertEqual(P.pad("未贴现承兑汇票", 4), "未贴现承兑汇票")
+
+    def test_signal_bar_column_aligns(self):
+        body = chart_section(prepare("2026-06-h1"), "信号")
+        # ⚠️ 必须同时要求「含条形字符」：`## 信号` 段开头那句摘要也以「活化」开头，
+        # 只按前缀取会把它算进来，得到一个假的不对齐。
+        rows = [l for l in body.splitlines()
+                if l.startswith(("活化", "楼市", "消费", "信贷")) and ("░" in l or "█" in l)]
+        self.assertEqual(len(rows), 4)
+        starts = {self.dwidth(l.split("░")[0].split("█")[0]) for l in rows}
+        self.assertEqual(len(starts), 1, f"四行的条形起始列不一致: {starts}")
+
+    def test_tsf_bar_column_aligns(self):
+        body = chart_section(prepare("2026-06-h1"), "社融增量结构")
+        rows = [l for l in body.splitlines() if "亿元" in l and ("░" in l or "█" in l)]
+        self.assertGreater(len(rows), 3)
+        starts = {self.dwidth(l.split("░")[0].split("█")[0]) for l in rows}
+        self.assertEqual(len(starts), 1, f"各行的条形起始列不一致: {starts}")
+
+
+class TrendMissingValues(unittest.TestCase):
+    """🔴 `monthly_average` 缺值时返回 **(0, False)**——第二个元素才是「取到没取到」。
+    只判 `v is None` 会把缺期画成 0，在图上造出一个**假的谷底**，而读者无从分辨
+    「这个月真的是 0」和「这个月没数据」。"""
+
+    def test_periods_missing_both_calibers_are_skipped(self):
+        contract = load_fixture("2023-08-monthly")
+        history = load_history("2023-08-monthly")
+        missing = [e["meta"]["period"] for e in history["same_type"]
+                   if e["data"].get("loan_hh_mlt_ytd") is None
+                   and e["data"].get("loan_hh_mlt_mom") is None]
+        self.assertTrue(missing, "夹具前置：该侧车里应当有两个口径都缺的期次")
+
+        md = P.render_trend_household(contract, history, "loan_hh_mlt_ytd",
+                                      "loan_hh_mlt_mom", "住户中长期贷款", 2000)
+        axis = re.search(r"x-axis \[([^\]]*)\]", md).group(1)
+        on_axis = {p.strip() for p in axis.split(",")}
+        for p in missing:
+            self.assertNotIn(p, on_axis, f"{p} 两个口径都缺，不该出现在 x 轴上")
+
+    def test_no_fabricated_zero_in_series(self):
+        contract = load_fixture("2023-08-monthly")
+        history = load_history("2023-08-monthly")
+        md = P.render_trend_household(contract, history, "loan_hh_mlt_ytd",
+                                      "loan_hh_mlt_mom", "住户中长期贷款", 2000)
+        values = re.search(r"line \[([^\]]*)\]", md).group(1)
+        reals = [e["data"].get("loan_hh_mlt_mom") for e in history["same_type"]]
+        self.assertNotIn(0, [v for v in reals if v is not None],
+                         "夹具前置：真实值里没有 0，所以图上出现 0 必然是补出来的")
+        self.assertNotIn("0,", values + ",", "序列里不该出现补零")
