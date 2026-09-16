@@ -15,6 +15,8 @@ import argparse
 import datetime
 import hashlib
 import json
+import math
+import unicodedata
 import re
 import sys
 
@@ -370,6 +372,212 @@ def reading_hints(contract, derived):
          if derived["known"] < 4 else "本期四个信号都已知")
 
 
+# ── 图表（M3 后续，2026-09-16）────────────────────────────────────────────────
+#
+# 🔴 图表段**不发 check 行**，沿 `## 信号` 段的先例——note-format.md 的两级校验表里
+# 「改 `## 信号` 段（无 check 保护）」那一行写明：封条 seal 覆盖机器区减叙述段，
+# 改内容与删整段都拦得住。check 行数因此**继续写死为 2**，不随图表段增减。
+#
+# 渲染分工（2026-09-16 裁决）：趋势用 mermaid 折线（看得出拐点），阈值对比用文本条
+# （永不会坏、git diff 干净、任何 markdown 阅读器里都一样）。Obsidian 1.12 内置
+# mermaid 且支持 xychart-beta，不需要 Charts 插件。
+
+BAR_FULL, BAR_EMPTY = "█", "░"
+
+SIGNAL_LABEL = {"activation": "活化", "housing": "楼市",
+                "consumption": "消费", "credit": "信贷"}
+
+
+def pad(text, width):
+    """按**显示列宽**右补空格。中文/全角占 2 列，`%-Ns` 按字符数补齐会让列参差，
+    而文本条的全部价值就是一眼扫过去。超宽不截断——截断会把「未贴现承兑汇票」
+    砍成半个词，比不对齐更糟。"""
+    w = sum(2 if unicodedata.east_asian_width(c) in "WF" else 1 for c in text)
+    return text + " " * max(0, width - w)
+
+
+def bar(ratio, width=10):
+    """把 0..1 画成方块条。None 与越界都按边界处理——条是给人扫一眼的，
+    不该因为一个缺失值就抛异常把整篇笔记搞没。"""
+    if ratio is None:
+        return BAR_EMPTY * width
+    r = min(1.0, max(0.0, float(ratio)))
+    full = int(round(r * width))
+    return BAR_FULL * full + BAR_EMPTY * (width - full)
+
+
+def achievement(name, value, sig):
+    """「距绿灯多远」，绿灯即 1.0。四个信号的判定形状不同，这里统一成一个可比的数：
+
+      activation  两条线（沉淀 / 活化）⇒ 落在区间内按线性位置
+      housing     一条正阈值        ⇒ 值 ÷ 阈值，截断到 [0,1]
+      consumption 阈值是 0          ⇒ 非此即彼（该信号本就没有黄灯）
+      credit      两条线（健康 / 严重）⇒ 越小越好，反向线性
+
+    ⚠️ 红灯也给距离而不是一律 0：楼市 368.67/2000 = 18% 比「0%」有用得多。
+    返回 None 表示输入缺失（对应 unknown），调用方画空条并标 n/a。"""
+    if value is None:
+        return None
+    v = float(value)
+    if name == "activation":
+        sink, active = float(sig["scissors_sink"]), float(sig["scissors_active"])
+        if v >= active:
+            return 1.0
+        if v <= sink:
+            return 0.0
+        return (v - sink) / (active - sink)
+    if name == "credit":
+        healthy, severe = float(sig["bill_ratio_healthy"]), float(sig["bill_ratio_severe"])
+        if v < healthy:
+            return 1.0
+        if v >= severe:
+            return 0.0
+        return (severe - v) / (severe - healthy)
+    warm = float(sig["hh_mlt_monthly_warm"] if name == "housing" else sig["hh_short_monthly_warm"])
+    if warm == 0:
+        return 1.0 if v >= 0 else 0.0
+    return min(1.0, max(0.0, v / warm))
+
+
+def render_signal_bars(derived, sig):
+    """四信号距绿灯多远。每个信号一行，同一行内给出值、条、达成度、阈值与灯。"""
+    rows = [
+        ("activation", "剪刀差", derived.get("scissors"), "pct",
+         "沉淀线 %s / 活化线 %s" % (fmt(sig["scissors_sink"]), fmt(sig["scissors_active"]))),
+        ("housing", "住户中长期月均", derived.get("hh_mlt_monthly"), "亿元",
+         "暖身线 %s" % fmt(sig["hh_mlt_monthly_warm"])),
+        ("consumption", "住户短期月均", derived.get("hh_short_monthly"), "亿元",
+         "暖身线 %s" % fmt(sig["hh_short_monthly_warm"])),
+        ("credit", "票据占企业新增", derived.get("bill_ratio"), "%",
+         "健康线 %s / 严重线 %s" % (fmt(sig["bill_ratio_healthy"]), fmt(sig["bill_ratio_severe"]))),
+    ]
+    lines = ["", "**达成度**：绿灯即 100%；红灯也按距绿灯的远近给值，不一律记 0。", "", "```"]
+    for key, metric, value, unit, thresh in rows:
+        a = achievement(key, value, sig)
+        pct = "n/a " if a is None else "%3d%%" % int(round(a * 100))
+        lines.append("%s  %s%s %s  %s  %s  %s  %s" % (
+            SIGNAL_LABEL[key], pad(metric, 16), "%9s" % fmt(value), pad(unit, 4),
+            bar(a), pct, thresh, EMOJI[derived[key]]))
+    lines.append("```")
+    lines.append("")
+    return "\n".join(lines)
+
+
+def _xychart(title, labels, values, yname):
+    """一张 mermaid 折线。y 轴范围由数据算，留一成余量，保证确定性。"""
+    lo, hi = min(values), max(values)
+    pad = max(1.0, (hi - lo) * 0.1)
+    return "\n".join([
+        "```mermaid",
+        "xychart-beta",
+        '    title "%s"' % title,
+        "    x-axis [%s]" % ", ".join(labels),
+        '    y-axis "%s" %d --> %d' % (yname, math.floor(lo - pad), math.ceil(hi + pad)),
+        "    line [%s]" % ", ".join(fmt(v) for v in values),
+        "```",
+        "",
+    ])
+
+
+def _trend_points(contract, history, pick):
+    """侧车的同类型历史 + **本期**，按期次升序。
+
+    🔴 本期必须由契约补在末尾：侧车的 `same_type` 来自 `Store.Preceding`，语义是
+    「period < 本期」，只补历史不含当期 ⇒ 不补的话图上看不到最新那个点，
+    而最新那个点正是读者最关心的。
+
+    取不到值的期次**跳过**（不补零、不插值）：补零会在图上画出一个假的谷底。"""
+    pts = []
+    for e in sorted(history.get("same_type") or [], key=lambda x: x["meta"]["period"]):
+        v = pick(e["data"], e["meta"]["period"], contract["period_type"])
+        if v is not None:
+            pts.append((e["meta"]["period"], v))
+    cur = pick(contract["data"], contract["period"], contract["period_type"])
+    if cur is not None:
+        pts.append((contract["period"], cur))
+    return pts
+
+
+def _pick_scissors(data, period, ptype):
+    m1, m2 = data.get("m1_yoy"), data.get("m2_yoy")
+    return None if m1 is None or m2 is None else round(float(m1) - float(m2), 2)
+
+
+def _pick_monthly(ytd, mom):
+    """🔴 判的是 `monthly_average` 的**第二个返回值 ok**，不是 `v is None`。
+    该函数缺值时返回 `(0, False)`——只判 v 会把「这期没数据」画成 0，
+    在折线上造出一个假的谷底，而读者无从分辨它和「这期真的是 0」。"""
+    def inner(data, period, ptype):
+        v, ok = monthly_average(data, ytd, mom, period, ptype)
+        return round(v, 2) if ok else None
+    return inner
+
+
+def render_trend_scissors(contract, history):
+    pts = _trend_points(contract, history, _pick_scissors)
+    if not pts:
+        return "> 剪刀差趋势：侧车与本期都取不到 `m1_yoy` / `m2_yoy`，不画。\n"
+    sig = contract["thresholds"]["signals"]
+    md = _xychart("M1−M2 剪刀差 · %s 序列" % contract["period_type"],
+                  [p for p, _ in pts], [v for _, v in pts], "pct")
+    return md + ("> 共 %d 期（侧车同类型历史 + 本期）。活化线 %s / 沉淀线 %s。"
+                 "x 轴按侧车实际期次排列，**缺期不补**——轴上没有的期次即未入权威表。\n"
+                 % (len(pts), fmt(sig["scissors_active"]), fmt(sig["scissors_sink"])))
+
+
+def render_trend_household(contract, history, ytd, mom, label, warm):
+    """🔴 拆成单线图而不是双线：`xychart-beta` **没有图例**，两条线画在一张图上
+    无法分辨哪条是哪条。宁可两张图，也不要一张看不懂的。"""
+    pts = _trend_points(contract, history, _pick_monthly(ytd, mom))
+    if not pts:
+        return "> %s 趋势：取不到数据，不画。\n" % label
+    md = _xychart("%s 月均 · %s 序列" % (label, contract["period_type"]),
+                  [p for p, _ in pts], [v for _, v in pts], "亿元")
+    return md + "> 共 %d 期。暖身线 %s 亿元。月均口径：`_mom` 优先，否则 `_ytd` ÷ 期内月数。\n" % (
+        len(pts), fmt(warm))
+
+
+TSF_ITEMS = [
+    ("对实体人民币贷款", "tsf_flow_rmb_loan_ytd", "tsf_flow_rmb_loan_mom"),
+    ("政府债券", "tsf_flow_govt_bond_ytd", "tsf_flow_govt_bond_mom"),
+    ("企业债券", "tsf_flow_corp_bond_ytd", "tsf_flow_corp_bond_mom"),
+    ("股票融资", "tsf_flow_equity_ytd", "tsf_flow_equity_mom"),
+    ("外币贷款", "tsf_flow_fx_loan_ytd", "tsf_flow_fx_loan_mom"),
+    ("委托贷款", "tsf_flow_entrust_ytd", "tsf_flow_entrust_mom"),
+    ("信托贷款", "tsf_flow_trust_ytd", "tsf_flow_trust_mom"),
+    ("未贴现承兑汇票", "tsf_flow_bankaccept_ytd", "tsf_flow_bankaccept_mom"),
+]
+
+
+def render_tsf_structure(contract):
+    """社融增量结构占比。分母是社融增量总量，分子逐项同口径取。
+
+    ⚠️ 本段**只输出占比这一种百分数**：叙述里引用的「政府债占 30.9%」必须与这里
+    算出来的是同一个数，两处各算各的迟早会对不上。"""
+    d = contract["data"]
+    total, _ = _pick(d, "tsf_flow_ytd", "tsf_flow_mom")
+    if not total:
+        return "> 社融增量结构：取不到 `tsf_flow_ytd` / `tsf_flow_mom`，不画。\n"
+    rows = []
+    for label, ytd, mom in TSF_ITEMS:
+        v, _ = _pick(d, ytd, mom)
+        if v is None:
+            continue
+        rows.append((label, v, float(v) / float(total)))
+    if not rows:
+        return "> 社融增量结构：本期无分项数据，不画。\n"
+    rows.sort(key=lambda r: r[2], reverse=True)
+    lines = ["", "```"]
+    for label, v, share in rows:
+        lines.append("%s%s 亿元  %s  %5.1f%%" % (
+            pad(label, 18), "%9s" % fmt(v), bar(share), share * 100))
+    lines.append("```")
+    lines.append("")
+    lines.append("> 分母为社融增量总量 %s 亿元。负值项（净偿还）条留空。" % fmt(total))
+    lines.append("")
+    return "\n".join(lines)
+
+
 # ── 组装 ─────────────────────────────────────────────────────────────────────
 
 TITLE_SUFFIX = {"monthly": "金融统计数据解读", "q1": "一季度金融统计数据解读",
@@ -402,10 +610,21 @@ def build_note(contract, history, now, existing_md=""):
     body.append(with_check("## 本期数据\n\n" + render_table_current(contract, history) + "\n"))
     body.append(with_check("## 前 12 期\n\n" + render_table_history(history, ptype) + "\n"))
 
-    body.append("## 信号\n\n活化 %s · 楼市 %s · 消费 %s · 信贷 %s · 温度 %d/%d\n\n" % (
+    body.append("## 信号\n\n活化 %s · 楼市 %s · 消费 %s · 信贷 %s · 温度 %d/%d\n" % (
         EMOJI[derived["activation"]], EMOJI[derived["housing"]],
         EMOJI[derived["consumption"]], EMOJI[derived["credit"]],
         derived["score"], derived["known"]))
+    body.append(render_signal_bars(derived, sig) + "\n")
+
+    body.append("## 趋势\n\n")
+    body.append(render_trend_scissors(contract, history) + "\n")
+    body.append(render_trend_household(contract, history, "loan_hh_mlt_ytd", "loan_hh_mlt_mom",
+                                       "住户中长期贷款", sig["hh_mlt_monthly_warm"]) + "\n")
+    body.append(render_trend_household(contract, history, "loan_hh_short_ytd", "loan_hh_short_mom",
+                                       "住户短期贷款", sig["hh_short_monthly_warm"]) + "\n")
+
+    body.append("## 社融增量结构\n")
+    body.append(render_tsf_structure(contract) + "\n")
     body.append(NARR_OPEN + "\n" + reading_hints(contract, derived) + NARR_CLOSE + "\n")
     out.append("".join(body).rstrip("\n"))
 
