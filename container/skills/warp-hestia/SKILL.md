@@ -9,6 +9,7 @@ description: >-
 # Warp Hestia Skill
 
 <!-- M3 的 TASK-004：本文件的六步与 §3 边界照需求文档原文，不得自行增删。 -->
+<!-- 2026-09-16：Step 3/4/5/6 与失败分支表因 content_path 改写，来源 hestia/docs/superpowers/plans/2026-09-16-spool-content-path.md 的 TASK-003；步数与 §3 边界未动。 -->
 
 ## §1 I/O 约定（先记牢）
 
@@ -137,9 +138,11 @@ rm -f $Q/processing/${F%.json}.note.md
   - 事后闸**过** ⇒ 契约与侧车移 `done/`，`rm -f` 删掉 `.note.md`；回复「已写入 Wiki/Macro/PBOC/$N，队列还剩 N 份」。
   - 事后闸**不过** ⇒ 契约与侧车**对移 `failed/`**，把 `verify.py` 的输出**原文**回复用户。
     🔴 **此时 vault 里那份已经被 Spool 落盘并 git 提交，本 skill 无法回滚**（vault 只读、唯一写出口
-    就是 `spool.archive`），须人工处理。`.note.md` **保留**在 `processing/`：它与 vault 成品的 diff 就是证据。
+    就是 `spool.archive`），须人工处理。`.note.md` **保留**在 `processing/`：它与 vault 成品的 diff 就是证据——
+    ⚠️ 契约补发回 `pending/` 后 Step 3 的 `>` 会**静默覆盖**它，补发前先 `cp` 走。
 - `DENIED` / `ERROR` ⇒ `mv $Q/processing/$F $Q/processing/$H $Q/failed/`；把返回**原文**回复用户，**不重试**。
-  `.note.md` **保留**在 `processing/` 作取证——Spool 拒的就是这份字节，删了就没法对照。
+  `.note.md` **保留**在 `processing/` 作取证——Spool 拒的就是这份字节，删了就没法对照；
+  ⚠️ 契约补发回 `pending/` 后 Step 3 的 `>` 会**静默覆盖**它，补发前先 `cp` 走。
 
 **为什么两道都要**：`content_path` 防誊写，这道防「Spool 之后还有别的东西动了字节」这类未知。
 成本是一条命令，而它查的是**最终落盘的那份**——前面所有校验查的都是中间产物。
