@@ -22,6 +22,7 @@ FIX = os.path.join(HERE, "fixtures")
 GOLDEN = os.path.join(FIX, "golden")
 PREP = os.path.join(HERE, "prepare.py")
 VERIFY = os.path.join(HERE, "verify.py")
+EXAMPLE = os.path.join(os.path.dirname(HERE), "examples", "2026-06-h1.md")
 
 sys.path.insert(0, HERE)
 
@@ -332,6 +333,59 @@ class BadInput(unittest.TestCase):
         self.assertIn("空文件", empty.stdout + empty.stderr)
         self.assertIn("不是笔记格式", junk.stdout + junk.stderr)
         self.assertNotIn("空文件", junk.stdout + junk.stderr)
+
+
+class ExampleStaysValid(unittest.TestCase):
+    """examples/2026-06-h1.md 是 SKILL.md Step 4 让模型照着写的参照。
+
+    参照件会腐坏：prepare.py 改了机器区骨架，样例还是旧的，模型就照着旧的写。
+    这条把它钉住——样例必须始终自洽（两条 check + 一条 seal 都对得上）。
+    两条一起才够：自洽（check/seal 对得上）只抓「样例被改坏」，抓不到「样例过时但仍自洽」。
+    后者由骨架比对抓——机器区的 `##` 小节必须与当期 prepare.py 产出的一致。
+    🔴 比的是**骨架不是数值**：样例是运行时那一期的真实产物，夹具契约的 `thresholds` 与
+    `extracted_at` 与它不同，逐字比会恒红。
+    """
+
+    def test_example_file_exists(self):
+        self.assertTrue(os.path.isfile(EXAMPLE), "样例缺失；SKILL.md Step 4 指向它")
+
+    def test_example_passes_verify(self):
+        r = run([VERIFY, EXAMPLE], check=False)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+    def test_example_keeps_review_gate_closed(self):
+        """样例必须写 reviewed: false。
+
+        写成 true 会教坏模型——那是人审门，流程本身产不出这个值，
+        Spool 对每次归档都无条件覆写成 false。
+        """
+        with open(EXAMPLE, encoding="utf-8") as fh:
+            frontmatter = fh.read().split("---", 2)[1]
+        self.assertIn("reviewed: false", frontmatter)
+        self.assertNotIn("reviewed: true", frontmatter)
+
+    def test_example_matches_current_skeleton(self):
+        """机器区小节与当期 prepare.py 产出一致——抓「样例过时但仍自洽」。
+
+        prepare.py 加一个小节而样例没跟上时，样例自己的 check/seal 仍然对得上，
+        上面那条测试不会响，模型却照着少一节的旧样子写。
+        """
+        def sections(md):
+            inside = False
+            out = []
+            for line in md.splitlines():
+                if line.startswith("<!-- machine-generated: begin"):
+                    inside = True
+                elif line.startswith("<!-- machine-generated: end"):
+                    break
+                elif inside and line.startswith("## "):
+                    out.append(line)
+            return out
+
+        with open(EXAMPLE, encoding="utf-8") as fh:
+            got = sections(fh.read())
+        want = sections(prepare("2026-06-h1"))
+        self.assertEqual(got, want, "样例机器区小节与 prepare.py 当期产出不符")
 
 
 if __name__ == "__main__":
