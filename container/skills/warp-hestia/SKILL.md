@@ -16,6 +16,8 @@ description: >-
 1. **队列**：`/workspace/extra/hestia-queue/`，**可写**。四个子目录 `pending/ processing/ done/ failed/`。
    契约 `<period>-<period_type>.json`，侧车 `<period>-<period_type>.history.json`，**成对移动**。
 2. **vault**：`/workspace/extra/vault` 只读。用 `cat` / `rg` 读旧笔记与方法论；**绝不直接写**。
+   它与宿主 `vault_root` 是**同一目录**（Spool 在宿主侧写，本 skill 从容器侧读）——这是 Step 6 事后闸
+   成立的前提；⚠️ Docker Desktop 宿主→容器的文件可见性**有延迟**，所以事后闸先等文件可见再校验。
 3. **写回（唯一写出口）**：`selvage_call(action="spool.archive", params={path, content_path, mode, source: "hestia"})`。
    `content_path` 是**相对 `spool_content_root`** 的路径（宿主上就是队列根），Spool 自己去读那份文件；
    **不传 `content`**（理由见 Step 5）。拿到 `DENIED` / `ERROR` 原文回复用户，不重试。
@@ -109,6 +111,13 @@ Step 2 的「同名已在 processing ⇒ 直接用那对」自然重试。`.note
 ⚠️ 与 Step 3 的守卫**同源同判据**：判「文件存在」而不是「变量非空」，否则每期首次都会误判成 `update`，
 Spool 会因目标不存在而拒绝。
 
+```bash
+[ -f "$EXISTING" ] && mode=update || mode=create
+# 🔴 调 selvage_call 之前记下旧稿指纹，Step 6 事后闸靠它分辨「读到的是新稿还是挂载延迟下的旧稿」。
+# create 场景没有旧稿，记 none。
+OLD_SUM=$( [ -f "$EXISTING" ] && sha256sum < "$EXISTING" || echo none )
+```
+
 ```
 selvage_call(action="spool.archive",
              params={path: "Wiki/Macro/PBOC/$N",
@@ -128,12 +137,29 @@ selvage_call(action="spool.archive",
 - `OK` ⇒ **先过事后闸，再移 `done/`**：
 
 ```bash
-# OK 之后、移 done/ 之前：对 vault 里的**成品**再校验一次
-python3 /app/skills/warp-hestia/scripts/verify.py "/workspace/extra/vault/Wiki/Macro/PBOC/$N" \
+# OK 之后、移 done/ 之前：对 vault 里的**成品**再校验一次。
+# ① 先等文件可见：宿主写、容器读，Docker Desktop 的可见性有延迟，立刻读可能 ENOENT（create）或读到旧稿（update）。
+#    判据 = 文件存在 **且** 指纹 != OLD_SUM；最多 5 次、每次 1 秒（bash 3.2 语法，不用 {1..5} 数组）。
+i=0
+while [ $i -lt 5 ]; do
+  [ -f "$EXISTING" ] && [ "$(sha256sum < "$EXISTING")" != "$OLD_SUM" ] && break
+  i=$((i+1)); sleep 1
+done
+# ② 5 秒后仍不存在 ⇒ 按「事后校验不过」处置（Spool 已回 OK，宿主侧应已落盘，容器却看不到——要人看）。
+[ -f "$EXISTING" ] || { mv $Q/processing/$F $Q/processing/$H $Q/failed/; echo "归档后 5 秒仍读不到 ${EXISTING}（挂载可见延迟？），已移 failed/"; exit; }   # 🔴 必须带花括号：bash 3.2 遇 $VAR 紧跟全角字符会截错变量名
+# ③ 文件在 ⇒ verify.py 退出码非 0 就是封条不匹配，立即按「事后校验不过」处置，不重试。
+python3 /app/skills/warp-hestia/scripts/verify.py "$EXISTING" \
   || { mv $Q/processing/$F $Q/processing/$H $Q/failed/; echo "归档后校验不过，已移 failed/"; exit; }
 mv $Q/processing/$F $Q/processing/$H $Q/done/
 rm -f $Q/processing/${F%.json}.note.md
 ```
+
+  ⚠️ **两种「不过」要分开看**：`[ -f ]` 不成立是**看不见**（ENOENT），才值得等；`verify.py` 非零是**字节不对**，
+  多等也不会变对，所以不重试。**用指纹而不用 mtime** 判「新稿已可见」：mtime 要和 `selvage_call` 之前记的
+  时间戳比，而 Docker Desktop 的 VM 时钟与宿主可能有偏差（容器是 Linux，`stat -c %Y`；宿主 macOS 是
+  `stat -f %m`，两边口径还不同），指纹比对不依赖任何时钟。
+  📌 **已知限制**：update 场景若可见延迟超过 5 秒且旧稿仍可读，5 次过后 `[ -f ]` 成立、会对旧稿跑
+  `verify.py`——旧稿当初就是校验过的，会**假 PASS**。5 秒是经验值，真实重跑若碰到请把次数调大而不是删掉判据。
 
   - 事后闸**过** ⇒ 契约与侧车移 `done/`，`rm -f` 删掉 `.note.md`；回复「已写入 Wiki/Macro/PBOC/$N，队列还剩 N 份」。
   - 事后闸**不过** ⇒ 契约与侧车**对移 `failed/`**，把 `verify.py` 的输出**原文**回复用户。
@@ -157,7 +183,7 @@ rm -f $Q/processing/${F%.json}.note.md
 | Step 3 | `prepare.py` 退出码非零 | 契约与侧车**对移 `failed/`** | `>` 可能留下空文件，无碍 | stderr **原文** |
 | Step 5 | `verify.py` 退出码非零 | 🔴 **留在 `processing/`**，不移 | 留 `processing/`，下次会话 `>` 覆盖 | 差异；下次会话自然重试 |
 | Step 6 | `spool.archive` 返回 `DENIED` / `ERROR` | 契约与侧车**对移 `failed/`** | **保留**，取证 | 返回**原文**，不重试 |
-| Step 6 | 事后校验不过（vault 成品 `verify.py` 非零） | 契约与侧车**对移 `failed/`** | **保留**，与 vault 成品 diff 是证据 | `verify.py` 输出**原文**；🔴 vault 已落盘并 git 提交、无法回滚，须人工处理 |
+| Step 6 | 事后校验不过：vault 成品 **5 秒仍不可见**（ENOENT，先 `[ -f ]` 短重试 5×1s）**或** `verify.py` 非零（封条不匹配，不重试） | 契约与侧车**对移 `failed/`** | **保留**，与 vault 成品 diff 是证据 | 哪种不过（读不到 / `verify.py` 输出**原文**）；🔴 vault 已落盘并 git 提交、无法回滚，须人工处理。📌 已知限制：update 场景可见延迟 >5s 会以旧稿假 PASS |
 
 ## §3 不做
 
