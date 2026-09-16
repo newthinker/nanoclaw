@@ -114,7 +114,8 @@ Spool 会因目标不存在而拒绝。
 ```bash
 [ -f "$EXISTING" ] && mode=update || mode=create
 # 🔴 调 selvage_call 之前记下旧稿指纹，Step 6 事后闸靠它分辨「读到的是新稿还是挂载延迟下的旧稿」。
-# create 场景没有旧稿，记 none。
+# create 场景没有旧稿，记 none。⚠️ 镜像若无 coreutils（sha256sum 缺失）也会退化为 none ⇒ update 场景等价于
+# 「存在即校验」的假 PASS；当前 node:22-slim 有 coreutils。
 OLD_SUM=$( [ -f "$EXISTING" ] && sha256sum < "$EXISTING" || echo none )
 ```
 
@@ -162,9 +163,11 @@ rm -f $Q/processing/${F%.json}.note.md
   `verify.py`——旧稿当初就是校验过的，会**假 PASS**。5 秒是经验值，真实重跑若碰到请把次数调大而不是删掉判据。
 
   - 事后闸**过** ⇒ 契约与侧车移 `done/`，`rm -f` 删掉 `.note.md`；回复「已写入 Wiki/Macro/PBOC/$N，队列还剩 N 份」。
-  - 事后闸**不过** ⇒ 契约与侧车**对移 `failed/`**，把 `verify.py` 的输出**原文**回复用户。
+  - 事后闸**不过** ⇒ 契约与侧车**对移 `failed/`**，把**哪种**不过回复用户：「5 秒仍读不到（挂载可见延迟？）」
+    / `verify.py` 的输出**原文**。
     🔴 **此时 vault 里那份已经被 Spool 落盘并 git 提交，本 skill 无法回滚**（vault 只读、唯一写出口
-    就是 `spool.archive`），须人工处理。`.note.md` **保留**在 `processing/`：它与 vault 成品的 diff 就是证据——
+    就是 `spool.archive`），须人工处理。`.note.md` **保留**在 `processing/`：后者（封条不匹配）时它与 vault
+    成品的 diff 就是证据；前者（读不到）容器看不见成品，diff 要在宿主侧做——
     ⚠️ 契约补发回 `pending/` 后 Step 3 的 `>` 会**静默覆盖**它，补发前先 `cp` 走。
 - `DENIED` / `ERROR` ⇒ `mv $Q/processing/$F $Q/processing/$H $Q/failed/`；把返回**原文**回复用户，**不重试**。
   `.note.md` **保留**在 `processing/` 作取证——Spool 拒的就是这份字节，删了就没法对照；
