@@ -303,6 +303,97 @@ def render_table_current(contract, history):
     return "\n".join(lines) + "\n"
 
 
+# ── 同比变化 ───────────────────────────────────────────────────────────────────
+# 🔴 **本段存在的唯一理由：把变化率从模型手里收回来。**
+#
+# 机器区的提示一直写着「引用上面表里的数字，**不自己算**」，而叙述里的对比表需要
+# 「本期 vs 去年同期 vs 变化」——前两个能从表里抄，第三个抄不到，模型只能自己算。
+# 实测它算对了（2026-09-18 三期共 9 项重算全中），但那是运气好，规则一直在被偏离。
+# ⇒ 机器把全部可比字段的变化算好放在这里，叙述层就只剩引用。
+#
+# **不带中文标签，按字段名列。** 加标签就要在本文件维护第二份 33 项的标签表，
+# 而中文名已经由模型在叙述表里写（`住户存款 \`deposit_household_ytd\``）。
+# 一份事实两个副本，改一处不会让另一处变红。
+
+# 按百分点差（而非百分比变化）报的字段：它们本身就是比率，8.3% → 8% 是
+# **−0.3 个百分点**，不是 −3.6%。把比率当水平值算百分比是这类表最常见的错。
+PP_EXACT = ("rate_ibo", "rate_repo")
+
+
+def _change_kind(field):
+    return "pp" if field.endswith("_yoy") or field in PP_EXACT else "pct"
+
+
+def _change_cell(cur, base, kind):
+    """算一格变化。**无意义时明确写「—」并给出原因，不编一个数出来。**
+
+    `loan_hh_short_ytd` 去年同期 −3 亿元、本期 −5881 亿元 ⇒ 百分比是 196000%，
+    数学上没错、传达的是噪声。此类一律不报比率，让叙述层用文字描述
+    （实测模型写的「净还款大幅扩大」正是对的做法）。"""
+    if cur is None or base is None:
+        return "—（缺值）"
+    if kind == "pp":
+        return "%+.2f pp" % (cur - base)
+    if base == 0:
+        return "—（基数为 0）"
+    if (cur > 0) != (base > 0):
+        return "—（符号相反）"
+    if abs(base) < 1:
+        return "—（基数过小）"
+    pct = (cur - base) / abs(base) * 100
+    # 🔴 **绝对阈值挡不住这一类**（2026-09-18 实撞，由模型抓出）：
+    # `loan_hh_short_ytd` 去年同期 −3 亿元、本期 −5881 亿元，基数过了 `<1` 那一关，
+    # 于是算出 **−195933.3%**——数学没错，纯噪声。模型拒绝抄它、改写「由持平转净偿」，
+    # **模型是对的、这段代码是错的**。
+    # ⇒ 判据必须是**相对**的：基数相对本期小到让比率超过 ±1000% 时，比率已不传达信息。
+    if abs(pct) > 1000:
+        return "—（基数过小：%s ⇒ 比率无意义）" % fmt(base)
+    return "%+.1f%%" % pct
+
+
+def render_table_yoy(contract, history):
+    """全部可比字段的「本期 / 去年同期 / 差额 / 变化」。**不发 check 行**，沿 `## 信号` 的先例。
+
+    ⚠️ 口径不同的**不省略、要标出来**——省略会让模型以为该字段没有可比项，
+    进而自己去算一个（「数据缺失就说缺失」的同一条道理）。"""
+    ya_period = _year_ago(contract["period"])
+    year_ago = next((e for e in _series(history) if e["meta"]["period"] == ya_period), None)
+    cur_cal = contract["caliber_version"]
+
+    if year_ago is None:
+        return ("> 侧车里没有去年同期（%s）的同类型期次，本期无同比可算。\n"
+                "> ⚠️ **叙述里不要自己编同比**——没有基数就是没有。\n" % ya_period)
+
+    ya_cal = year_ago["meta"]["caliber_version"]
+    lines = [
+        "| 字段 | 本期 %s | 去年同期 %s | 差额 | 变化 |" % (contract["period"], ya_period),
+        "| --- | ---: | ---: | ---: | ---: |",
+    ]
+    data, ya = contract["data"], year_ago["data"]
+    for field in sorted(data):
+        cur, base = data.get(field), ya.get(field)
+        if cur is None and base is None:
+            continue
+        kind = _change_kind(field)
+        if ya_cal != cur_cal:
+            cell = "—（口径 %s≠%s）" % (ya_cal, cur_cal)
+            diff = "—"
+        else:
+            cell = _change_cell(cur, base, kind)
+            diff = "%+g" % (cur - base) if (cur is not None and base is not None) else "—"
+        lines.append("| `%s` | %s | %s | %s | %s |" % (field, fmt(cur), fmt(base), diff, cell))
+
+    lines.append("")
+    lines.append("> 🔴 **叙述里的「变化」一律引用本表，不要自己算。** 标 `—` 的用文字描述"
+                 "（如「净还款扩大」），**不要编一个百分比**。")
+    lines.append("> `_yoy` 与利率字段报的是**百分点差**（`pp`），其余报百分比变化——"
+                 "比率字段算百分比是这类表最常见的错。")
+    if ya_cal != cur_cal:
+        lines.append("> ⚠️ 去年同期口径为 `%s`，与本期 `%s` 不同 ⇒ **全部字段不可做同比**"
+                     "（见 `references/glossary.md`）。" % (ya_cal, cur_cal))
+    return "\n".join(lines) + "\n"
+
+
 def render_table_history(history, ptype=None):
     """前 12 期。数据**取自侧车的 `same_type`**，有多少渲染多少，
     不自己查库、不补齐、不截断到别的条数。`ptype` 仅为兼容保留，不参与取数。"""
@@ -360,7 +451,8 @@ def reading_hints(contract, derived):
         "每一问引用上面表里的数字，不自己算、不改表、不动 frontmatter。）\n"
         "\n"
         "- **排版**（见 `references/methodology.md` 的「排版纪律」）：每问先写一句**加粗结论**（≤30 字），"
-        "三值以上的对比进小表，论证段 ≤150 字，**字段名放表格首列的标签里**"
+        "三值以上的对比进小表（**「变化」列一律引用 `## 同比变化` 段，不自己算；"
+        "该段标 `—` 的用文字描述、别编百分比**），论证段 ≤150 字，**字段名放表格首列的标签里**"
         "（`住户存款 \\`deposit_household_ytd\\``）、**不要嵌在句子中间**；"
         "表格没覆盖的字段才写一行段末 `<sub>`；缺失与警示用 `⚠️` 单起一行。\n"
         "- 本期四信号：活化 %s / 楼市 %s / 消费 %s / 信贷 %s，温度 **%d/%d**。\n"
@@ -613,6 +705,9 @@ def build_note(contract, history, now, existing_md=""):
     body = []
     body.append(with_check("## 本期数据\n\n" + render_table_current(contract, history) + "\n"))
     body.append(with_check("## 前 12 期\n\n" + render_table_history(history, ptype) + "\n"))
+    # 🔴 不发 check 行（沿 `## 信号` 先例）：机器区 check 恒 2 条，note-format.md 与
+    #    verify.py 都写死了这个数。本段靠封条保护。
+    body.append("## 同比变化\n\n" + render_table_yoy(contract, history) + "\n")
 
     body.append("## 信号\n\n活化 %s · 楼市 %s · 消费 %s · 信贷 %s · 温度 %d/%d\n" % (
         EMOJI[derived["activation"]], EMOJI[derived["housing"]],
