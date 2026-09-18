@@ -14,7 +14,10 @@ description: >-
 
 ## §1 I/O 约定（先记牢）
 
-1. **队列**：`/workspace/extra/hestia-queue/`，**可写**。四个子目录 `pending/ processing/ done/ failed/`。
+1. **队列**：`/workspace/extra/hestia-queue/`，**可写**。四个状态目录 `pending/ processing/ done/ failed/`，
+   外加**工作区 `drafts/`**——成稿 `.note.md` 写在那里，**不在 `processing/`**。
+   ⚠️ `drafts/` 不是队列状态，不计入健康度指标；它存在的唯一理由是让
+   `mv $Q/processing/* $Q/done/` 这类通配符碰不到成稿（2026-09-18 两轮实撞后改的结构）。
    契约 `<period>-<period_type>.json`，侧车 `<period>-<period_type>.history.json`，**成对移动**。
 2. **vault**：`/workspace/extra/vault` 只读。用 `cat` / `rg` 读旧笔记与方法论；**绝不直接写**。
    它与宿主 `vault_root` 是**同一目录**（Spool 在宿主侧写，本 skill 从容器侧读）——这是 Step 6 事后闸
@@ -68,9 +71,9 @@ EXISTING=/workspace/extra/vault/Wiki/Macro/PBOC/$N
 # ⚠️ 刻意用显式 if/else 而不是数组：空数组的 "${ARR[@]}" 在 bash 3.2（macOS 自带）配 set -u
 # 时会报 unbound variable，而 create 场景下它恰恰是空的。if/else 在 sh / bash 3.2 / zsh 都对。
 if [ -f "$EXISTING" ]; then
-  python3 /app/skills/warp-hestia/scripts/prepare.py $Q/processing/$F $Q/processing/$H --existing "$EXISTING" > $Q/processing/${F%.json}.note.md
+  python3 /app/skills/warp-hestia/scripts/prepare.py $Q/processing/$F $Q/processing/$H --existing "$EXISTING" > $Q/drafts/${F%.json}.note.md
 else
-  python3 /app/skills/warp-hestia/scripts/prepare.py $Q/processing/$F $Q/processing/$H > $Q/processing/${F%.json}.note.md
+  python3 /app/skills/warp-hestia/scripts/prepare.py $Q/processing/$F $Q/processing/$H > $Q/drafts/${F%.json}.note.md
 fi
 ```
 
@@ -93,7 +96,7 @@ fi
 
 读 `references/methodology.md`。**只改** `<!-- narrative -->` 与 `<!-- /narrative -->` 之间的文本：
 按八问框架写，每一问引用数据表里的数字，不自己算、不改表、不动 frontmatter。
-写完存回 `$Q/processing/${F%.json}.note.md`——**就是 Step 3 写出的那份，不是 `/tmp`**：
+写完存回 `$Q/drafts/${F%.json}.note.md`——**就是 Step 3 写出的那份，不是 `/tmp`**：
 存回 `/tmp` 而 Step 5 传的是队列路径，归档的就是一份没有叙述的旧稿。
 
 参照 `examples/2026-06-h1.md`——一份人审过的真实产物，看八问写到什么密度、
@@ -103,13 +106,13 @@ fi
 **Step 5 校验并写回**
 
 ```bash
-python3 /app/skills/warp-hestia/scripts/verify.py $Q/processing/${F%.json}.note.md || { echo "数据段被改动，拒绝写回"; exit; }
+python3 /app/skills/warp-hestia/scripts/verify.py $Q/drafts/${F%.json}.note.md || { echo "数据段被改动，拒绝写回"; exit; }
 ```
 
 `verify.py` **退出码非零** ⇒ **拒绝写回**，把差异回复用户。
 🔴 **此时契约与侧车留在 `processing/`，不移 `failed/`**——数据段被改是**这一轮叙述**的问题，
 契约本身没毛病；移 `failed/` 会让一份好契约需要人工捞回。留在 `processing/` 则下一次会话按
-Step 2 的「同名已在 processing ⇒ 直接用那对」自然重试。`.note.md` 同样**留在 `processing/`**，
+Step 2 的「同名已在 processing ⇒ 直接用那对」自然重试。`.note.md` 同样**留在 `drafts/`**，
 不用手动删——下次会话 Step 3 的 `>` 会直接覆盖它。
 
 校验通过后：`mode` 取值——**对文件求值**：`[ -f "$EXISTING" ] && mode=update || mode=create`。
@@ -127,7 +130,7 @@ OLD_SUM=$( [ -f "$EXISTING" ] && sha256sum < "$EXISTING" || echo none )
 ```
 selvage_call(action="spool.archive",
              params={path: "Wiki/Macro/PBOC/$N",
-                     content_path: "processing/${F%.json}.note.md",
+                     content_path: "drafts/${F%.json}.note.md",
                      mode, source: "hestia"})
 ```
 
@@ -136,7 +139,7 @@ selvage_call(action="spool.archive",
 `verify.py` 守的是磁盘上那份，誊写发生在它之后 ⇒ **校验与归档之间有一段无保护**。
 传 `content_path` 让 Spool 直接读那份被校验过的字节。
 ⚠️ `content_path` **相对 `spool_content_root`**（宿主上就是队列根），所以写
-`processing/xxx.note.md`，**不要**写 `/workspace/extra/hestia-queue/...`——绝对路径会被拒。
+`drafts/xxx.note.md`，**不要**写 `/workspace/extra/hestia-queue/...`——绝对路径会被拒。
 
 **Step 6 收尾**
 
@@ -157,7 +160,7 @@ done
 python3 /app/skills/warp-hestia/scripts/verify.py "$EXISTING" \
   || { mv $Q/processing/$F $Q/processing/$H $Q/failed/; echo "归档后校验不过，已移 failed/"; exit; }
 mv $Q/processing/$F $Q/processing/$H $Q/done/
-rm -f $Q/processing/${F%.json}.note.md   # 🔴 **删掉，不是移进 done/**
+rm -f $Q/drafts/${F%.json}.note.md
 ```
 
   ⚠️ **两种「不过」要分开看**：`[ -f ]` 不成立是**看不见**（ENOENT），才值得等；`verify.py` 非零是**字节不对**，
@@ -169,18 +172,19 @@ rm -f $Q/processing/${F%.json}.note.md   # 🔴 **删掉，不是移进 done/**
 
   - 事后闸**过** ⇒ 契约与侧车移 `done/`，`rm -f` 删掉 `.note.md`；回复「已写入 Wiki/Macro/PBOC/$N，队列还剩 N 份」。
 
-    ⚠️ **只移 `$F` 与 `$H` 两个，别用通配符把 `.note.md` 一起带过去**（2026-09-18 实撞：
-    三期的 `.note.md` 都被移进了 `done/`）。它无害——内容已在 vault、也不干扰重放——但会
-    **一期一个永久累积**，还会让 `hestia_queue_items{state="done"}` 的件数失去意义。
+    ✅ **成稿现在写在 `$Q/drafts/`，不在 `processing/`**（2026-09-18 改）——所以
+    `mv $Q/processing/* $Q/done/` 这种通配符**碰不到它**。
+    ⚠️ 此前它在 `processing/` 时，即使 SKILL.md 明写 `rm -f`、又加了显式警告，
+    **连续两轮仍被通配符带进 `done/`** ⇒ 注释拦不住，才改的结构。
     成品在 vault 里，`done/` 只留契约与侧车。
   - 事后闸**不过** ⇒ 契约与侧车**对移 `failed/`**，把**哪种**不过回复用户：「5 秒仍读不到（挂载可见延迟？）」
     / `verify.py` 的输出**原文**。
     🔴 **此时 vault 里那份已经被 Spool 落盘并 git 提交，本 skill 无法回滚**（vault 只读、唯一写出口
-    就是 `spool.archive`），须人工处理。`.note.md` **保留**在 `processing/`：后者（封条不匹配）时它与 vault
+    就是 `spool.archive`），须人工处理。`.note.md` **保留**在 `drafts/`：后者（封条不匹配）时它与 vault
     成品的 diff 就是证据；前者（读不到）容器看不见成品，diff 要在宿主侧做——
     ⚠️ 契约补发回 `pending/` 后 Step 3 的 `>` 会**静默覆盖**它，补发前先 `cp` 走。
 - `DENIED` / `ERROR` ⇒ `mv $Q/processing/$F $Q/processing/$H $Q/failed/`；把返回**原文**回复用户，**不重试**。
-  `.note.md` **保留**在 `processing/` 作取证——Spool 拒的就是这份字节，删了就没法对照；
+  `.note.md` **保留**在 `drafts/` 作取证——Spool 拒的就是这份字节，删了就没法对照；
   ⚠️ 契约补发回 `pending/` 后 Step 3 的 `>` 会**静默覆盖**它，补发前先 `cp` 走。
 
 **为什么两道都要**：`content_path` 防誊写，这道防「Spool 之后还有别的东西动了字节」这类未知。
