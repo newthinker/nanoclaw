@@ -157,7 +157,7 @@ done
 python3 /app/skills/warp-hestia/scripts/verify.py "$EXISTING" \
   || { mv $Q/processing/$F $Q/processing/$H $Q/failed/; echo "归档后校验不过，已移 failed/"; exit; }
 mv $Q/processing/$F $Q/processing/$H $Q/done/
-rm -f $Q/processing/${F%.json}.note.md
+rm -f $Q/processing/${F%.json}.note.md   # 🔴 **删掉，不是移进 done/**
 ```
 
   ⚠️ **两种「不过」要分开看**：`[ -f ]` 不成立是**看不见**（ENOENT），才值得等；`verify.py` 非零是**字节不对**，
@@ -168,6 +168,11 @@ rm -f $Q/processing/${F%.json}.note.md
   `verify.py`——旧稿当初就是校验过的，会**假 PASS**。5 秒是经验值，真实重跑若碰到请把次数调大而不是删掉判据。
 
   - 事后闸**过** ⇒ 契约与侧车移 `done/`，`rm -f` 删掉 `.note.md`；回复「已写入 Wiki/Macro/PBOC/$N，队列还剩 N 份」。
+
+    ⚠️ **只移 `$F` 与 `$H` 两个，别用通配符把 `.note.md` 一起带过去**（2026-09-18 实撞：
+    三期的 `.note.md` 都被移进了 `done/`）。它无害——内容已在 vault、也不干扰重放——但会
+    **一期一个永久累积**，还会让 `hestia_queue_items{state="done"}` 的件数失去意义。
+    成品在 vault 里，`done/` 只留契约与侧车。
   - 事后闸**不过** ⇒ 契约与侧车**对移 `failed/`**，把**哪种**不过回复用户：「5 秒仍读不到（挂载可见延迟？）」
     / `verify.py` 的输出**原文**。
     🔴 **此时 vault 里那份已经被 Spool 落盘并 git 提交，本 skill 无法回滚**（vault 只读、唯一写出口
