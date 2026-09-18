@@ -506,14 +506,15 @@ class CheckLines(unittest.TestCase):
         self.assertNotIn("<!-- check:", seg)
 
     def test_heading_count_differs_from_check_count(self):
-        """钉住『不能按 `## ` 标题数推 check 行数』：机器区 5 个 `## ` 而 check 恒 2。
+        """钉住『不能按 `## ` 标题数推 check 行数』：机器区 6 个 `## ` 而 check 恒 2。
 
         🔴 2026-09-16 加图表段后由 3 变 5（`## 信号` / `## 趋势` / `## 社融增量结构` 都不发
-        check 行）。**这条测试的价值恰恰在于它会随结构变化而红**——它逼着人重新确认
+        check 行）；2026-09-18 加 `## 同比变化` 后变 6，check 仍是 2。
+        **这条测试的价值恰恰在于它会随结构变化而红**——它逼着人重新确认
         「check 行数不从结构推」这件事仍然成立，而不是让两个数悄悄一起漂。"""
         mz = self.md.split("<!-- machine-generated: begin -->", 1)[1] \
                     .split("<!-- machine-generated: end -->", 1)[0]
-        self.assertEqual(len([l for l in mz.splitlines() if l.startswith("## ")]), 5)
+        self.assertEqual(len([l for l in mz.splitlines() if l.startswith("## ")]), 6)
         self.assertEqual(self.md.count("<!-- check: "), 2)
 
     def test_check_covers_from_previous_heading(self):
